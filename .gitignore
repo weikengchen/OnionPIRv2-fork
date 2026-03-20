@@ -17,7 +17,8 @@ build/Onion-PIR
 cmake-build-debug
 .cache
 temp/
-SEAL
+# Ignore SEAL build artifacts in root, but not extern/SEAL submodule
+/SEAL
 lib64/
 include/
 output.txt
@@ -27,3 +28,5 @@ outputs/
 .vscode/
 note&analysis/
 PIR_papers/
+preprocessed_db.bin
+rawDB.bin

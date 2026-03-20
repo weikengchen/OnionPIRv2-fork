@@ -141,6 +141,17 @@ public:
 // Macros for easy time logging
 #define TIME_START(sec) TimerLogger::getInstance().start(sec)
 #define TIME_END(sec) TimerLogger::getInstance().end(sec)
+
+// Thread-safe variants: no-op when inside an OpenMP parallel region.
+// Use these inside code paths that may be called from parallel regions.
+#ifdef _OPENMP
+#include <omp.h>
+#define TIME_START_SAFE(sec) do { if (!omp_in_parallel()) TIME_START(sec); } while(0)
+#define TIME_END_SAFE(sec)   do { if (!omp_in_parallel()) TIME_END(sec); } while(0)
+#else
+#define TIME_START_SAFE(sec) TIME_START(sec)
+#define TIME_END_SAFE(sec)   TIME_END(sec)
+#endif
 #define END_EXPERIMENT() TimerLogger::getInstance().endExperiment()
 #define PRINT_RESULTS(expId) TimerLogger::getInstance().printResults(expId)
 #define PRINT_AVERAGE_RESULTS() TimerLogger::getInstance().printAverageResults()

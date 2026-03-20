@@ -56,13 +56,13 @@ void GSWEval::external_product(GSWCiphertext const &gsw_enc, seal::Ciphertext co
   // ============================ Decomposition ============================
   // Decomposing the BFV ciphertext to 2l polynomials. Transform to NTT form.
   std::vector<std::vector<uint64_t>> decomposed_bfv;
-  TIME_START(decomp_rlwe_log_key);
+  TIME_START_SAFE(decomp_rlwe_log_key);
   if (rns_mod_cnt == 1) {
     decomp_rlwe_single_mod(bfv, decomposed_bfv, context);
   } else {
     decomp_rlwe(bfv, decomposed_bfv, context);
   }
-  TIME_END(decomp_rlwe_log_key);
+  TIME_END_SAFE(decomp_rlwe_log_key);
 
   // Transform decomposed coefficients to NTT form
   decomp_to_ntt(decomposed_bfv, context);
@@ -71,7 +71,7 @@ void GSWEval::external_product(GSWCiphertext const &gsw_enc, seal::Ciphertext co
   std::vector<std::vector<uint128_t>> result(
       2, std::vector<uint128_t>(coeff_val_cnt, 0));
 
-  TIME_START(extern_prod_mat_mult_log_key);
+  TIME_START_SAFE(extern_prod_mat_mult_log_key);
   // matrix multiplication: decomp(bfv) * gsw = (1 x 2l) * (2l x 2) = (1 x 2)
   for (size_t k = 0; k < 2; ++k) {
     for (size_t j = 0; j < 2 * l_; j++) {
@@ -83,10 +83,10 @@ void GSWEval::external_product(GSWCiphertext const &gsw_enc, seal::Ciphertext co
       }
     }
   }
-  TIME_END(extern_prod_mat_mult_log_key);
+  TIME_END_SAFE(extern_prod_mat_mult_log_key);
 
   // ============================ Modding ============================
-  TIME_START("external mod");
+  TIME_START_SAFE("external mod");
   const auto coeff_modulus = pir_params_.get_coeff_modulus();
   for (size_t poly_id = 0; poly_id < 2; poly_id++) {
     auto ct_ptr = res_ct.data(poly_id);
@@ -101,7 +101,7 @@ void GSWEval::external_product(GSWCiphertext const &gsw_enc, seal::Ciphertext co
       }
     }
   }
-  TIME_END("external mod");
+  TIME_END_SAFE("external mod");
   res_ct.is_ntt_form() = true;  // the result of two NTT form polynomials is still in NTT form.
 }
 
@@ -144,17 +144,17 @@ void GSWEval::decomp_rlwe(seal::Ciphertext const &ct, std::vector<std::vector<ui
   for (size_t poly_id = 0; poly_id < 2; poly_id++) {
     // we need a copy because we need to compose the array. This copy is very fast. 
     memcpy(ct_coeffs.data(), ct.data(poly_id), coeff_val_cnt * sizeof(uint64_t));
-    TIME_START(extern_compose_log_key); 
+    TIME_START_SAFE(extern_compose_log_key); 
     // the "compose_array" transform the coefficients from RNS form to multi-precision integer form. The lower bits are in the front. 
     // ! the compose and decompose functions are slow when rns_mod_cnt > 1 because mod and div operations are slow.
     rns_base->compose_array(ct_coeffs.data(), coeff_count, pool);
-    TIME_END(extern_compose_log_key);
+    TIME_END_SAFE(extern_compose_log_key);
 
     // we right shift certain amount to match the GSW ciphertext
     for (size_t p = l_; p-- > 0;) { // loop from l_ - 1 to 0.
       std::vector<uint64_t> rshift_res(ct_coeffs);
       const size_t shift_amount = p * base_log2_;
-      TIME_START(right_shift_log_key);
+      TIME_START_SAFE(right_shift_log_key);
       for (size_t k = 0; k < coeff_count; k++) {
         uint64_t* res_ptr = rshift_res.data() + k * rns_mod_cnt;
         if (rns_mod_cnt == 2) {
@@ -171,10 +171,10 @@ void GSWEval::decomp_rlwe(seal::Ciphertext const &ct, std::vector<std::vector<ui
           }
         }
       }
-      TIME_END(right_shift_log_key);
-      TIME_START(extern_decomp_log_key);
+      TIME_END_SAFE(right_shift_log_key);
+      TIME_START_SAFE(extern_decomp_log_key);
       rns_base->decompose_array(rshift_res.data(), coeff_count, pool);
-      TIME_END(extern_decomp_log_key);
+      TIME_END_SAFE(extern_decomp_log_key);
 
       output.emplace_back(std::move(rshift_res));
     }
@@ -210,13 +210,13 @@ void GSWEval::decomp_rlwe_single_mod(seal::Ciphertext const &ct, std::vector<std
       std::vector<uint64_t> rshift_res(poly_ptr, poly_ptr + coeff_count);
       const size_t shift_amount = p * base_log2_;
       
-      TIME_START(right_shift_log_key);
+      TIME_START_SAFE(right_shift_log_key);
       #pragma GCC unroll 32
       for (size_t k = 0; k < coeff_count; k++) {
         // right shift every coefficient. This is why we need coefficient form.
         rshift_res[k] = (rshift_res[k] >> shift_amount) & mask;
       }
-      TIME_END(right_shift_log_key);
+      TIME_END_SAFE(right_shift_log_key);
 
       output.emplace_back(std::move(rshift_res)); // this is also fast
     }
@@ -242,13 +242,13 @@ void GSWEval::decomp_to_ntt(std::vector<std::vector<uint64_t>> &decomp_coeffs,
   const auto ntt_tables = context_data->small_ntt_tables();
 
   // ============================ NTT Transformation ============================
-  TIME_START(extern_ntt_log_key);
+  TIME_START_SAFE(extern_ntt_log_key);
   for (auto &coeffs : decomp_coeffs) {
     for (size_t i = 0; i < rns_mod_cnt; i++) {
       seal::util::ntt_negacyclic_harvey(coeffs.data() + coeff_count * i, ntt_tables[i]);
     }
   }
-  TIME_END(extern_ntt_log_key);
+  TIME_END_SAFE(extern_ntt_log_key);
 }
 
 void GSWEval::query_to_gsw(std::vector<seal::Ciphertext> query, GSWCiphertext gsw_key,
@@ -259,29 +259,26 @@ void GSWEval::query_to_gsw(std::vector<seal::Ciphertext> query, GSWCiphertext gs
   const size_t rns_mod_cnt = pir_params_.get_rns_mod_cnt();
 
   // We get the first half directly from the query
+  const size_t poly_size = coeff_count * rns_mod_cnt;
   for (size_t i = 0; i < curr_l; i++) {
-    for (size_t j = 0; j < coeff_count * rns_mod_cnt; j++) {
-      output[i].push_back(query[i].data(0)[j]);
-    }
-    for (size_t j = 0; j < coeff_count * rns_mod_cnt; j++) {
-      output[i].push_back(query[i].data(1)[j]);
-    }
+    output[i].resize(2 * poly_size);
+    memcpy(output[i].data(), query[i].data(0), poly_size * sizeof(uint64_t));
+    memcpy(output[i].data() + poly_size, query[i].data(1), poly_size * sizeof(uint64_t));
   }
   gsw_ntt_negacyclic_harvey(output);  // And the first half should be in NTT form
-  
+
   // The second half is computed using external product.
   output.resize(2 * curr_l);
-  // We use external product to get the second half
+  // Pre-allocate output vectors for the second half
   for (size_t i = 0; i < curr_l; i++) {
-    TIME_START(CONVERT_EXTERN);
+    output[i + curr_l].resize(2 * poly_size);
+  }
+  // Each iteration is independent: reads shared gsw_key, writes to disjoint query[i] and output[i+curr_l]
+  #pragma omp parallel for schedule(static)
+  for (size_t i = 0; i < curr_l; i++) {
     external_product(gsw_key, query[i], query[i], LogContext::QUERY_TO_GSW);
-    TIME_END(CONVERT_EXTERN);
-    for (size_t j = 0; j < coeff_count * rns_mod_cnt; j++) {
-      output[i + curr_l].push_back(query[i].data(0)[j]);
-    }
-    for (size_t j = 0; j < coeff_count * rns_mod_cnt; j++) {
-      output[i + curr_l].push_back(query[i].data(1)[j]);
-    }
+    memcpy(output[i + curr_l].data(), query[i].data(0), poly_size * sizeof(uint64_t));
+    memcpy(output[i + curr_l].data() + poly_size, query[i].data(1), poly_size * sizeof(uint64_t));
   }
 }
 

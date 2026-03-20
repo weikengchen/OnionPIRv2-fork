@@ -3,8 +3,12 @@
 #include "gsw_eval.h"
 #include "pir.h"
 #include <optional>
+#include <string>
 
+// RAW_DB_FILE is only used in debug builds for direct_get_entry verification
+#ifdef _DEBUG
 #define RAW_DB_FILE "./rawDB.bin"
+#endif
 
 // typedef std::vector<std::optional<seal::Plaintext>> DatabaseChunk;  // 256 plaintexts
 typedef std::unique_ptr<std::optional<seal::Plaintext>[]> DatabaseChunk;  // Heap allocation for N_1 plaintexts
@@ -20,6 +24,21 @@ public:
    * It pushes the data to the database in chunks.
    */
   void gen_data();
+
+  /**
+   * Save the preprocessed (NTT + realigned) database to a binary file.
+   * The file contains a header for config validation followed by the raw db_aligned_ data.
+   * This allows skipping the expensive gen_data/NTT/realign pipeline on subsequent launches.
+   */
+  void save_db_to_file(const std::string &path) const;
+
+  /**
+   * Load a preprocessed database from file via mmap (zero-copy).
+   * Returns true if the file exists and config matches. Returns false otherwise
+   * (caller should fall back to gen_data).
+   * After a successful load, the server is ready to answer queries — no gen_data needed.
+   */
+  bool load_db_from_file(const std::string &path);
 
   // push one chunk of entry to the given database
   void push_database_chunk(std::vector<Entry> &chunk_entry, const size_t chunk_idx);
@@ -41,12 +60,14 @@ public:
   void set_client_galois_key(const size_t client_id, std::stringstream &gsw_stream);
   void set_client_gsw_key(const size_t client_id, std::stringstream &gsw_stream);
 
+#ifdef _DEBUG
   /**
   Asking the server to return the entry at the given (abstract) index.
   This is not doing PIR. So this reveals the index to the server. This is
   only for testing purposes.
   */
   Entry direct_get_entry(const size_t index) const;
+#endif
 
   friend class PirTest;
 
@@ -58,7 +79,10 @@ private:
   std::map<size_t, seal::GaloisKeys> client_galois_keys_;
   std::map<size_t, GSWCiphertext> client_gsw_keys_;
   Database db_; // pointer to the entire database vector
-  std::unique_ptr<uint64_t[]> db_aligned_; // aligned database for fast first dim
+  std::unique_ptr<uint64_t[]> db_aligned_; // aligned database for fast first dim (owned memory)
+  uint64_t *db_aligned_mmap_ = nullptr;    // mmap'd database (non-owned, munmap in destructor)
+  size_t db_aligned_mmap_len_ = 0;         // total mmap length including header
+  int db_aligned_mmap_fd_ = -1;            // file descriptor for mmap
   std::vector<uint128_t> inter_res_; // pointer to the intermediate result vector for fst dim
   PirParams pir_params_;
   GSWEval key_gsw_;
@@ -101,8 +125,15 @@ private:
   // Fill the intermediate_db_ with some ciphertext. We just need to allocate the memory.
   void fill_inter_res();
 
-  // write one chunk of the database to a binary file in CACHE_DIR
+  // Returns the active db_aligned pointer (mmap'd or heap-allocated).
+  inline uint64_t *get_db_ptr() const {
+    return db_aligned_mmap_ ? db_aligned_mmap_ : db_aligned_.get();
+  }
+
+#ifdef _DEBUG
+  // write one chunk of the database to a binary file for direct_get_entry verification
   void write_one_chunk(std::vector<Entry> &chunk);
+#endif
 
   void prep_query(const std::vector<seal::Ciphertext> &fst_dim_query, std::vector<uint64_t>& query_data);
 

@@ -9,6 +9,10 @@
 #include <fstream>
 #include <bit>
 #include <cstdint>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 #if defined(__AVX512F__)
     #include <immintrin.h>
@@ -27,8 +31,6 @@ PirServer::PirServer(const PirParams &pir_params)
       num_pt_(pir_params.get_num_pt()), evaluator_(context_), dims_(pir_params.get_dims()),
       key_gsw_(pir_params, pir_params.get_l_key(), pir_params.get_base_log2_key()),
       data_gsw_(pir_params, pir_params.get_l(), pir_params.get_base_log2()) {
-  // delete the raw_db_file if it exists
-  std::remove(RAW_DB_FILE);
   // allocate enough space for the database, init with std::nullopt
   db_ = std::make_unique<std::optional<seal::Plaintext>[]>(num_pt_);
   // after NTT, each database polynomial coefficient will be in mod q. Hence,
@@ -39,13 +41,28 @@ PirServer::PirServer(const PirParams &pir_params)
 }
 
 PirServer::~PirServer() {
-  // delete the raw_db_file
+#ifdef _DEBUG
   std::remove(RAW_DB_FILE);
+#endif
+  // clean up mmap if active
+  if (db_aligned_mmap_) {
+    // The mmap region starts at (db_aligned_mmap_ - header), but we stored the full length
+    void *base = reinterpret_cast<char *>(db_aligned_mmap_) - sizeof(uint64_t) * 4;
+    munmap(base, db_aligned_mmap_len_);
+    db_aligned_mmap_ = nullptr;
+  }
+  if (db_aligned_mmap_fd_ >= 0) {
+    close(db_aligned_mmap_fd_);
+    db_aligned_mmap_fd_ = -1;
+  }
 }
 
 // Fills the database with random data
 void PirServer::gen_data() {
   BENCH_PRINT("Generating random data for the server database...");
+#ifdef _DEBUG
+  std::remove(RAW_DB_FILE);
+#endif
   std::ifstream random_file("/dev/urandom", std::ios::binary);
   if (!random_file.is_open()) {
     throw std::invalid_argument("Unable to open /dev/urandom");
@@ -67,7 +84,9 @@ void PirServer::gen_data() {
         one_chunk[col * num_en_per_pt + local_id] = utils::generate_entry(entry_id, entry_size, random_file);
       }
     }
+#ifdef _DEBUG
     write_one_chunk(one_chunk);
+#endif
     push_database_chunk(one_chunk, row);
     utils::print_progress(row+1, other_dim_sz);
   }
@@ -130,10 +149,10 @@ PirServer::evaluate_first_dim(std::vector<seal::Ciphertext> &fst_dim_query) {
   const size_t coeff_val_cnt = pir_params_.get_coeff_val_cnt(); // polydegree * RNS moduli count
   const size_t one_ct_sz = 2 * coeff_val_cnt; // Ciphertext has two polynomials
 
-  // fill the intermediate result with zeros
-  std::fill(inter_res_.begin(), inter_res_.end(), 0);
+  // NOTE: inter_res_ zeroing removed — mat_mat_128 uses assignment (=), not accumulation (+=).
 
-  // transform the selection vector to ntt form
+  // transform the selection vector to ntt form (parallelized — each ciphertext is independent)
+  #pragma omp parallel for schedule(static) if(fst_dim_query.size() > 4)
   for (size_t i = 0; i < fst_dim_query.size(); i++) {
     evaluator_.transform_to_ntt_inplace(fst_dim_query[i]);
   }
@@ -150,7 +169,7 @@ PirServer::evaluate_first_dim(std::vector<seal::Ciphertext> &fst_dim_query) {
   component wise matrix multiplication. Further details can be found in the "matrix.h" file.
   */
   // prepare the matrices
-  matrix_t db_mat { db_aligned_.get(), other_dim_sz, fst_dim_sz, coeff_val_cnt };
+  matrix_t db_mat { get_db_ptr(), other_dim_sz, fst_dim_sz, coeff_val_cnt };
   matrix_t query_mat { query_data.data(), fst_dim_sz, 2, coeff_val_cnt };
   matrix128_t inter_res_mat { inter_res_.data(), other_dim_sz, 2, coeff_val_cnt };
   TIME_START(CORE_TIME);
@@ -181,13 +200,17 @@ void PirServer::delay_modulus(std::vector<seal::Ciphertext> &result, const uint1
   constexpr size_t coeff_count = DatabaseConstants::PolyDegree;
   const auto coeff_modulus = pir_params_.get_coeff_modulus();
   const size_t inter_padding = other_dim_sz * 2;  // distance between coefficients in inter_res
-  
+
   // We need to unroll the loop to process multiple ciphertexts at once.
-  // Otherwise, this function is basically reading the intermediate result 
+  // Otherwise, this function is basically reading the intermediate result
   // with a stride of inter_padding, which causes many cache misses.
   constexpr size_t unroll_factor = 16;
 
+  // Pre-allocate result vector so threads can write to indexed positions.
+  result.resize(other_dim_sz);
+
   // Process ciphertexts in blocks of unroll_factor.
+  #pragma omp parallel for schedule(static)
   for (size_t j = 0; j < other_dim_sz; j += unroll_factor) {
     // Create an array of ciphertexts.
     std::array<seal::Ciphertext, unroll_factor> cts;
@@ -233,11 +256,11 @@ void PirServer::delay_modulus(std::vector<seal::Ciphertext> &result, const uint1
     }
 
     // Mark each ciphertext as being in NTT form and then transform back.
-    #pragma unroll
+    // Write directly to pre-allocated result positions.
     for (size_t idx = 0; idx < unroll_factor; idx++) {
       cts[idx].is_ntt_form() = true;
       evaluator_.transform_from_ntt_inplace(cts[idx]);
-      result.emplace_back(std::move(cts[idx]));
+      result[j + idx] = std::move(cts[idx]);
     }
   }
 }
@@ -248,8 +271,12 @@ void PirServer::delay_modulus_small(std::vector<seal::Ciphertext> &result, const
   constexpr size_t coeff_count = DatabaseConstants::PolyDegree;
   const auto coeff_modulus = pir_params_.get_coeff_modulus();
   const size_t inter_padding = other_dim_sz * 2;  // distance between coefficients in inter_res
-  
+
+  // Pre-allocate result vector so threads can write to indexed positions.
+  result.resize(other_dim_sz);
+
   // Process each ciphertext individually for small cases
+  #pragma omp parallel for schedule(static)
   for (size_t j = 0; j < other_dim_sz; j++) {
     // Create a single ciphertext
     seal::Ciphertext ct(context_);
@@ -278,7 +305,7 @@ void PirServer::delay_modulus_small(std::vector<seal::Ciphertext> &result, const
         uint128_t x1 = inter_res[base1 + inter_idx1 * inter_padding];
         uint64_t raw1[2] = { static_cast<uint64_t>(x1), static_cast<uint64_t>(x1 >> 64) };
         ct.data(1)[ct_idx1++] = util::barrett_reduce_128(raw1, modulus);
-        
+
         // Advance intermediate indices
         inter_idx0++;
         inter_idx1++;
@@ -288,7 +315,7 @@ void PirServer::delay_modulus_small(std::vector<seal::Ciphertext> &result, const
     // Mark ciphertext as being in NTT form and then transform back
     ct.is_ntt_form() = true;
     evaluator_.transform_from_ntt_inplace(ct);
-    result.emplace_back(std::move(ct));
+    result[j] = std::move(ct);
   }
 }
 
@@ -306,29 +333,30 @@ void PirServer::other_dim_mux(std::vector<seal::Ciphertext> &result,
    * result = RGSW(b) * (y - x) + x, where "*" is the external product, "+" and "-" are homomorphic operations.
    */
   const size_t block_size = result.size() / 2;
+  #pragma omp parallel for schedule(static)
   for (size_t i = 0; i < block_size; i++) {
     auto &x = result[i];
     auto &y = result[i + block_size];
 
     // ========== y = y - x ==========
-    TIME_START(OTHER_DIM_ADD_SUB);
+    TIME_START_SAFE(OTHER_DIM_ADD_SUB);
     evaluator_.sub_inplace(y, x);
-    TIME_END(OTHER_DIM_ADD_SUB);
+    TIME_END_SAFE(OTHER_DIM_ADD_SUB);
 
     // ========== y = b * (y - x) ========== output will be in NTT form
-    TIME_START(OTHER_DIM_MUX_EXTERN);
+    TIME_START_SAFE(OTHER_DIM_MUX_EXTERN);
     data_gsw_.external_product(selection_cipher, y, y, LogContext::OTHER_DIM_MUX);
-    TIME_END(OTHER_DIM_MUX_EXTERN);
+    TIME_END_SAFE(OTHER_DIM_MUX_EXTERN);
 
     // ========== y = INTT(y) ==========, INTT stands for inverse NTT
-    TIME_START(OTHER_DIM_INTT);
+    TIME_START_SAFE(OTHER_DIM_INTT);
     evaluator_.transform_from_ntt_inplace(y);
-    TIME_END(OTHER_DIM_INTT);
+    TIME_END_SAFE(OTHER_DIM_INTT);
 
     // ========== result = y + x ==========
-    TIME_START(OTHER_DIM_ADD_SUB); 
+    TIME_START_SAFE(OTHER_DIM_ADD_SUB);
     evaluator_.add_inplace(result[i], y);  // x + b * (y - x)
-    TIME_END(OTHER_DIM_ADD_SUB);
+    TIME_END_SAFE(OTHER_DIM_ADD_SUB);
   }
   result.resize(block_size);
 }
@@ -393,34 +421,39 @@ PirServer::fast_expand_qry(std::size_t client_id,seal::Ciphertext &ciphertext) c
   std::vector<seal::Ciphertext> cts(2 * w); // slots 0 … 2w-1
   cts[1] = ciphertext;                      // c1  ←  input
 
-  // ============== level-order walk, skip right-of-u sub-trees
-  for (size_t i = 1; i < w; ++i) { // internal nodes only
-    const int k = int{1} << (std::bit_width(i) - 1); // k = 2^{⌊log i⌋}   (span of this sub-tree)
+  // ============== level-by-level walk, parallelize within each level
+  for (size_t level = 0; level < expan_height; ++level) {
+    const size_t level_start = size_t{1} << level;      // first node at this depth
+    const size_t level_end   = size_t{1} << (level + 1); // one past last node
+    const int k = int(level_start);                       // span = 2^level
 
-    // left-most leaf index of this sub-tree
-    const size_t left_leaf = i * w / k - w; // exact integer
-    if (left_leaf >= useful_cnt)
-      continue; // skip whole sub-tree
-    
-    // ============== split   c[i] ->  c[2i] , c[2i+1]
-    // c' = Subs(c_i, w/k+1)
-    seal::Ciphertext c_prime = cts[i];
-    TIME_START(APPLY_GALOIS);
-    evaluator_.apply_galois_inplace(c_prime,
-                                    DatabaseConstants::PolyDegree / k + 1, 
-                                    galois_key); 
-    TIME_END(APPLY_GALOIS);
-    TIME_START("add_sub");
-    // c_{2i}   =  c_i + c'
-    evaluator_.add(cts[i], c_prime, cts[2 * i]);
+    // Collect nodes at this level that need processing (skip pruned subtrees)
+    std::vector<size_t> active_nodes;
+    active_nodes.reserve(level_end - level_start);
+    for (size_t i = level_start; i < level_end; ++i) {
+      const size_t left_leaf = i * w / k - w;
+      if (left_leaf < useful_cnt)
+        active_nodes.push_back(i);
+    }
 
-    // c_{2i+1} = (c_i − c') * x^{−k}
-    evaluator_.sub_inplace(cts[i], c_prime);
-    TIME_END("add_sub");
+    // All nodes at same level are independent — parallelize
+    #pragma omp parallel for schedule(static) if(active_nodes.size() > 4)
+    for (size_t idx = 0; idx < active_nodes.size(); ++idx) {
+      const size_t i = active_nodes[idx];
+      seal::Ciphertext c_prime = cts[i];
+      TIME_START_SAFE(APPLY_GALOIS);
+      evaluator_.apply_galois_inplace(c_prime,
+                                      DatabaseConstants::PolyDegree / k + 1,
+                                      galois_key);
+      TIME_END_SAFE(APPLY_GALOIS);
 
-    TIME_START("shift polynomial");
-    utils::shift_polynomial(params, cts[i], cts[2 * i + 1], -k);
-    TIME_END("shift polynomial");
+      // c_{2i}   =  c_i + c'
+      evaluator_.add(cts[i], c_prime, cts[2 * i]);
+
+      // c_{2i+1} = (c_i − c') * x^{−k}
+      evaluator_.sub_inplace(cts[i], c_prime);
+      utils::shift_polynomial(params, cts[i], cts[2 * i + 1], -k);
+    }
   }
 
   // ==============  return the first  u  leaves: heap slots  w … w+u−1
@@ -500,6 +533,7 @@ void PirServer::set_client_gsw_key(const size_t client_id, std::stringstream &gs
 }
 
 
+#ifdef _DEBUG
 Entry PirServer::direct_get_entry(const size_t entry_idx) const {
   // read the entry from raw_db_file
   std::ifstream in_file(RAW_DB_FILE, std::ios::binary);
@@ -515,6 +549,7 @@ Entry PirServer::direct_get_entry(const size_t entry_idx) const {
 
   return entry;
 }
+#endif
 
 
 seal::Ciphertext PirServer::make_query(const size_t client_id, std::stringstream &query_stream) {
@@ -533,14 +568,20 @@ seal::Ciphertext PirServer::make_query(const size_t client_id, std::stringstream
   TIME_START(CONVERT_TIME);
   std::vector<GSWCiphertext> gsw_vec(dims_.size() - 1); // GSW ciphertexts
   if (dims_.size() != 1) {  // if we do need futher dimensions
-    for (size_t i = 1; i < dims_.size(); i++) {
-      std::vector<seal::Ciphertext> lwe_vector; // BFV ciphertext, size l * 2. This vector will be reconstructed as a single RGSW ciphertext.
+    // Pre-build lwe_vectors so we can parallelize query_to_gsw calls
+    const size_t num_other_dims = dims_.size() - 1;
+    std::vector<std::vector<seal::Ciphertext>> lwe_vectors(num_other_dims);
+    for (size_t i = 0; i < num_other_dims; i++) {
+      lwe_vectors[i].reserve(DatabaseConstants::GSW_L);
       for (size_t k = 0; k < DatabaseConstants::GSW_L; k++) {
-        auto ptr = dims_[0] + (i - 1) * DatabaseConstants::GSW_L + k;
-        lwe_vector.push_back(query_vector[ptr]);
+        auto ptr = dims_[0] + i * DatabaseConstants::GSW_L + k;
+        lwe_vectors[i].push_back(query_vector[ptr]);
       }
-      // Converting the BFV ciphertexts to GSW ciphertext by doing external product
-      key_gsw_.query_to_gsw(lwe_vector, client_gsw_keys_[client_id], gsw_vec[i - 1]);
+    }
+    // Each query_to_gsw call is independent — parallelize
+    #pragma omp parallel for schedule(static)
+    for (size_t i = 0; i < num_other_dims; i++) {
+      key_gsw_.query_to_gsw(lwe_vectors[i], client_gsw_keys_[client_id], gsw_vec[i]);
     }
   }
   TIME_END(CONVERT_TIME);
@@ -761,8 +802,9 @@ void PirServer::fill_inter_res() {
   inter_res_.resize(elem_cnt);
 }
 
+#ifdef _DEBUG
 void PirServer::write_one_chunk(std::vector<Entry> &data) {
-  // write the database to a binary file in CACHE_DIR
+  // write the database to a binary file for direct_get_entry verification
   std::string filename = std::string(RAW_DB_FILE);
   std::ofstream out_file(filename, std::ios::binary | std::ios::app); // append to the file
   if (out_file.is_open()) {
@@ -774,6 +816,7 @@ void PirServer::write_one_chunk(std::vector<Entry> &data) {
     std::cerr << "Unable to open file for writing" << std::endl;
   }
 }
+#endif
 
 
 void PirServer::mod_switch_inplace(seal::Ciphertext &ciphertext, const uint64_t q) {
@@ -793,7 +836,7 @@ void PirServer::mod_switch_inplace(seal::Ciphertext &ciphertext, const uint64_t 
   auto* data1 = ciphertext.data(1);
   
   const long double scale = static_cast<double>(q) / static_cast<double>(Q);
-  
+
   for (size_t i = 0; i < DatabaseConstants::PolyDegree; i++) {
     data0[i] = (uint64_t)std::round((long double)data0[i] * scale);
     data1[i] = (uint64_t)std::round((long double)data1[i] * scale);
@@ -801,8 +844,121 @@ void PirServer::mod_switch_inplace(seal::Ciphertext &ciphertext, const uint64_t 
 }
 
 
+// ==================== Preprocessed DB persistence ====================
+//
+// File layout (all fields little-endian uint64_t):
+//   [0] magic     = 0x4F4E494F4E504952 ("ONIONPIR")
+//   [1] num_pt
+//   [2] coeff_val_cnt
+//   [3] data_bytes = num_pt * coeff_val_cnt * sizeof(uint64_t)
+//   [4..] raw db_aligned_ data (page-aligned start via padding if needed)
+//
+// The header is exactly 32 bytes (4 × uint64_t). Data starts at offset 32.
 
+static constexpr uint64_t PREPROC_MAGIC = 0x4F4E494F4E504952ULL; // "ONIONPIR"
+static constexpr size_t HEADER_UINT64S = 4;
+static constexpr size_t HEADER_BYTES = HEADER_UINT64S * sizeof(uint64_t);
 
+void PirServer::save_db_to_file(const std::string &path) const {
+  const size_t num_pt = pir_params_.get_num_pt();
+  const size_t coeff_val_cnt = pir_params_.get_coeff_val_cnt();
+  const size_t data_bytes = num_pt * coeff_val_cnt * sizeof(uint64_t);
+
+  const uint64_t *src = get_db_ptr();
+  if (!src) {
+    throw std::runtime_error("save_db_to_file: no database loaded");
+  }
+
+  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  if (!out.is_open()) {
+    throw std::runtime_error("save_db_to_file: cannot open " + path);
+  }
+
+  // write header
+  uint64_t header[HEADER_UINT64S];
+  header[0] = PREPROC_MAGIC;
+  header[1] = static_cast<uint64_t>(num_pt);
+  header[2] = static_cast<uint64_t>(coeff_val_cnt);
+  header[3] = static_cast<uint64_t>(data_bytes);
+  out.write(reinterpret_cast<const char *>(header), HEADER_BYTES);
+
+  // write data
+  out.write(reinterpret_cast<const char *>(src), data_bytes);
+  out.close();
+
+  double mb = static_cast<double>(HEADER_BYTES + data_bytes) / (1024.0 * 1024.0);
+  BENCH_PRINT("Saved preprocessed DB to " << path << " (" << mb << " MB)");
+}
+
+bool PirServer::load_db_from_file(const std::string &path) {
+  int fd = open(path.c_str(), O_RDONLY);
+  if (fd < 0) {
+    return false; // file doesn't exist — caller should gen_data
+  }
+
+  // get file size
+  struct stat st;
+  if (fstat(fd, &st) < 0) {
+    close(fd);
+    return false;
+  }
+  const size_t file_size = static_cast<size_t>(st.st_size);
+
+  // must be at least header-sized
+  if (file_size < HEADER_BYTES) {
+    BENCH_PRINT("Preprocessed DB file too small, regenerating...");
+    close(fd);
+    return false;
+  }
+
+  // mmap the entire file read-only
+  void *mapped = mmap(nullptr, file_size, PROT_READ, MAP_PRIVATE, fd, 0);
+  if (mapped == MAP_FAILED) {
+    BENCH_PRINT("mmap failed for " << path);
+    close(fd);
+    return false;
+  }
+
+  // validate header
+  const uint64_t *header = reinterpret_cast<const uint64_t *>(mapped);
+  const uint64_t magic = header[0];
+  const uint64_t file_num_pt = header[1];
+  const uint64_t file_coeff_val_cnt = header[2];
+  const uint64_t file_data_bytes = header[3];
+
+  const size_t expected_num_pt = pir_params_.get_num_pt();
+  const size_t expected_coeff_val_cnt = pir_params_.get_coeff_val_cnt();
+  const size_t expected_data_bytes = expected_num_pt * expected_coeff_val_cnt * sizeof(uint64_t);
+
+  if (magic != PREPROC_MAGIC ||
+      file_num_pt != expected_num_pt ||
+      file_coeff_val_cnt != expected_coeff_val_cnt ||
+      file_data_bytes != expected_data_bytes ||
+      file_size < HEADER_BYTES + expected_data_bytes) {
+    BENCH_PRINT("Preprocessed DB config mismatch, regenerating...");
+    munmap(mapped, file_size);
+    close(fd);
+    return false;
+  }
+
+  // advise the OS for sequential/willneed access
+  madvise(mapped, file_size, MADV_SEQUENTIAL);
+
+  // point db_aligned_mmap_ to the data portion (after header)
+  db_aligned_mmap_ = reinterpret_cast<uint64_t *>(
+      reinterpret_cast<char *>(mapped) + HEADER_BYTES);
+  db_aligned_mmap_len_ = file_size;
+  db_aligned_mmap_fd_ = fd;
+
+  // release the heap-allocated db_aligned_ since we won't need it
+  db_aligned_.reset();
+  // also don't need the plaintext database
+  db_.reset();
+
+  double mb = static_cast<double>(file_size) / (1024.0 * 1024.0);
+  BENCH_PRINT("Loaded preprocessed DB via mmap from " << path << " (" << mb << " MB)");
+  return true;
+}
 
 
 
