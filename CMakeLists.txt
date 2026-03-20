@@ -96,13 +96,8 @@ project(Onion-PIR)
 # ==================== OpenMP ====================
 find_package(OpenMP REQUIRED)
 
-# Automatically find all source files in src/
-file(GLOB_RECURSE SRC_FILES src/*.cpp)
-add_executable(Onion-PIR ${SRC_FILES})
-
 # ==================== SEAL (submodule) ====================
 # Build SEAL from extern/SEAL submodule instead of requiring a system install.
-# Disable optional dependencies we don't need.
 set(SEAL_USE_INTEL_HEXL OFF CACHE BOOL "" FORCE)
 set(SEAL_USE_MSGSL      OFF CACHE BOOL "" FORCE)
 set(SEAL_USE_ZLIB       OFF CACHE BOOL "" FORCE)
@@ -110,15 +105,31 @@ set(SEAL_USE_ZSTD       OFF CACHE BOOL "" FORCE)
 set(SEAL_BUILD_DEPS     ON  CACHE BOOL "" FORCE)
 set(SEAL_THROW_ON_TRANSPARENT_CIPHERTEXT OFF CACHE BOOL "" FORCE)
 add_subdirectory(extern/SEAL)
-target_link_libraries(Onion-PIR PUBLIC SEAL::seal)
 
-# Link OpenMP
-target_link_libraries(Onion-PIR PUBLIC OpenMP::OpenMP_CXX)
-
-# Link HEXL if enabled
+# ==================== Core library (for FFI / Rust integration) ====================
+# All source files except main.cpp and tests.cpp go into the static library.
+file(GLOB LIB_SRC_FILES
+    src/server.cpp
+    src/client.cpp
+    src/pir.cpp
+    src/gsw_eval.cpp
+    src/matrix.cpp
+    src/utils.cpp
+    src/logging.cpp
+    src/ffi.cpp
+)
+add_library(onionpir STATIC ${LIB_SRC_FILES})
+target_include_directories(onionpir PUBLIC src/includes)
+target_link_libraries(onionpir PUBLIC SEAL::seal OpenMP::OpenMP_CXX)
 if (USE_HEXL AND HEXL_FOUND)
-    target_link_libraries(Onion-PIR PUBLIC HEXL::hexl)
+    target_link_libraries(onionpir PUBLIC HEXL::hexl)
 endif()
 
-# Include directories
-target_include_directories(Onion-PIR PUBLIC src/includes)
+# Install the library and FFI header for external consumers (e.g. Rust -sys crate)
+install(TARGETS onionpir ARCHIVE DESTINATION lib)
+install(FILES src/includes/ffi.h DESTINATION include/onionpir)
+
+# ==================== Test executable ====================
+add_executable(Onion-PIR src/main.cpp src/tests.cpp)
+target_link_libraries(Onion-PIR PRIVATE onionpir)
+target_include_directories(Onion-PIR PRIVATE src/includes)

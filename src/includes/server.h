@@ -43,6 +43,13 @@ public:
   // push one chunk of entry to the given database
   void push_database_chunk(std::vector<Entry> &chunk_entry, const size_t chunk_idx);
 
+  /**
+   * Run NTT preprocessing and memory realignment on the populated database.
+   * Call this after all chunks have been pushed via push_database_chunk().
+   * This is the expensive one-time step that prepares the DB for queries.
+   */
+  void preprocess_db();
+
   // Given the client id and a packed client query, this function first unpacks the query, then returns the retrieved encrypted result.
   seal::Ciphertext make_query(const size_t client_id, std::stringstream &query_stream);
 

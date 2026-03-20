@@ -96,6 +96,11 @@ void PirServer::gen_data() {
   realign_db();
 }
 
+void PirServer::preprocess_db() {
+  preprocess_ntt();
+  realign_db();
+}
+
 void PirServer::prep_query(const std::vector<seal::Ciphertext> &fst_dim_query,
                            std::vector<uint64_t> &query_data) {
   const size_t fst_dim_sz = pir_params_.get_fst_dim_sz();       // 256
