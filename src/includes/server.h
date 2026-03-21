@@ -4,6 +4,7 @@
 #include "pir.h"
 #include <optional>
 #include <string>
+#include <list>
 
 // RAW_DB_FILE is only used in debug builds for direct_get_entry verification
 #ifdef _DEBUG
@@ -66,6 +67,7 @@ public:
   
   void set_client_galois_key(const size_t client_id, std::stringstream &gsw_stream);
   void set_client_gsw_key(const size_t client_id, std::stringstream &gsw_stream);
+  void remove_client_keys(const size_t client_id);
 
 #ifdef _DEBUG
   /**
@@ -83,8 +85,17 @@ private:
   seal::SEALContext context_;
   seal::Evaluator evaluator_;
   std::vector<size_t> dims_;
+  // Client key storage with LRU eviction.
+  // lru_order_ stores client_ids from least-recently-used (front) to most-recently-used (back).
+  // lru_pos_ maps client_id → iterator into lru_order_ for O(1) promotion.
+  static constexpr size_t MAX_CLIENTS = 100;
   std::map<size_t, seal::GaloisKeys> client_galois_keys_;
   std::map<size_t, GSWCiphertext> client_gsw_keys_;
+  std::list<size_t> lru_order_;
+  std::map<size_t, std::list<size_t>::iterator> lru_pos_;
+
+  void touch_client(size_t client_id);
+  void evict_if_full();
   Database db_; // pointer to the entire database vector
   std::unique_ptr<uint64_t[]> db_aligned_; // aligned database for fast first dim (owned memory)
   uint64_t *db_aligned_mmap_ = nullptr;    // mmap'd database (non-owned, munmap in destructor)

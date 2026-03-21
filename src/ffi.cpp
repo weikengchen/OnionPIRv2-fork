@@ -12,6 +12,12 @@
 #include <sstream>
 #include <cstring>
 #include <stdexcept>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <deque>
+#include <atomic>
+#include <unordered_map>
 
 // ======================== Opaque wrapper definitions ========================
 
@@ -129,6 +135,10 @@ void server_set_gsw_key(OnionPirServer &server,
   server.inner.set_client_gsw_key(static_cast<size_t>(client_id), ss);
 }
 
+void server_remove_client(OnionPirServer &server, uint64_t client_id) {
+  server.inner.remove_client_keys(static_cast<size_t>(client_id));
+}
+
 std::vector<uint8_t> server_answer_query(OnionPirServer &server,
                                          uint64_t client_id,
                                          const std::vector<uint8_t> &query_bytes) {
@@ -139,6 +149,146 @@ std::vector<uint8_t> server_answer_query(OnionPirServer &server,
   std::stringstream resp_stream;
   server.inner.save_resp_to_stream(response, resp_stream);
   return stream_to_bytes(resp_stream);
+}
+
+// ======================== Async query queue ========================
+
+struct QueuedQuery {
+  uint64_t ticket;
+  uint64_t client_id;
+  std::vector<uint8_t> query_bytes;
+};
+
+struct QueryResult {
+  QueryStatus status;
+  std::vector<uint8_t> data;   // populated when Done
+  std::string error;           // populated when Error
+};
+
+class OnionPirQueryQueue {
+public:
+  OnionPirServer &server;
+  std::atomic<uint64_t> next_ticket{1};
+
+  std::mutex mu;
+  std::condition_variable cv;
+  bool stopped = false;
+
+  std::deque<QueuedQuery> pending;            // waiting to be processed
+  uint64_t processing_ticket = 0;             // ticket currently being processed (0 = none)
+  std::unordered_map<uint64_t, QueryResult> results;  // completed (Done/Error)
+
+  std::thread worker;
+
+  explicit OnionPirQueryQueue(OnionPirServer &srv) : server(srv) {
+    worker = std::thread([this]() { run(); });
+  }
+
+  ~OnionPirQueryQueue() {
+    {
+      std::lock_guard<std::mutex> lk(mu);
+      stopped = true;
+    }
+    cv.notify_one();
+    if (worker.joinable()) worker.join();
+  }
+
+private:
+  void run() {
+    while (true) {
+      QueuedQuery job;
+      {
+        std::unique_lock<std::mutex> lk(mu);
+        cv.wait(lk, [&]{ return stopped || !pending.empty(); });
+        if (stopped && pending.empty()) return;
+        job = std::move(pending.front());
+        pending.pop_front();
+        processing_ticket = job.ticket;
+      }
+
+      QueryResult qr;
+      try {
+        qr.data = server_answer_query(server, job.client_id, job.query_bytes);
+        qr.status = QueryStatus::Done;
+      } catch (const std::exception &e) {
+        qr.status = QueryStatus::Error;
+        qr.error = e.what();
+      }
+
+      {
+        std::lock_guard<std::mutex> lk(mu);
+        processing_ticket = 0;
+        results[job.ticket] = std::move(qr);
+      }
+    }
+  }
+};
+
+std::unique_ptr<OnionPirQueryQueue> new_query_queue(OnionPirServer &server) {
+  return std::make_unique<OnionPirQueryQueue>(server);
+}
+
+void query_queue_stop(OnionPirQueryQueue &queue) {
+  {
+    std::lock_guard<std::mutex> lk(queue.mu);
+    queue.stopped = true;
+  }
+  queue.cv.notify_one();
+  if (queue.worker.joinable()) queue.worker.join();
+}
+
+uint64_t query_queue_submit(OnionPirQueryQueue &queue,
+                            uint64_t client_id,
+                            const std::vector<uint8_t> &query_bytes) {
+  uint64_t ticket = queue.next_ticket.fetch_add(1);
+  {
+    std::lock_guard<std::mutex> lk(queue.mu);
+    queue.pending.push_back({ticket, client_id, query_bytes});
+  }
+  queue.cv.notify_one();
+  return ticket;
+}
+
+QueryStatus query_queue_status(const OnionPirQueryQueue &queue, uint64_t ticket) {
+  std::lock_guard<std::mutex> lk(const_cast<std::mutex &>(queue.mu));
+  // Check completed results
+  auto it = queue.results.find(ticket);
+  if (it != queue.results.end()) return it->second.status;
+  // Currently processing?
+  if (queue.processing_ticket == ticket) return QueryStatus::Processing;
+  // In the pending queue?
+  for (const auto &q : queue.pending) {
+    if (q.ticket == ticket) return QueryStatus::Queued;
+  }
+  return QueryStatus::NotFound;
+}
+
+uint64_t query_queue_position(const OnionPirQueryQueue &queue, uint64_t ticket) {
+  std::lock_guard<std::mutex> lk(const_cast<std::mutex &>(queue.mu));
+  // Done / Error / Processing → 0
+  if (queue.results.count(ticket) || queue.processing_ticket == ticket)
+    return 0;
+  // Count how many pending items are ahead
+  uint64_t pos = 0;
+  for (const auto &q : queue.pending) {
+    if (q.ticket == ticket) return pos;
+    ++pos;
+  }
+  return 0; // NotFound
+}
+
+std::vector<uint8_t> query_queue_result(OnionPirQueryQueue &queue, uint64_t ticket) {
+  std::lock_guard<std::mutex> lk(queue.mu);
+  auto it = queue.results.find(ticket);
+  if (it == queue.results.end())
+    throw std::runtime_error("query_queue_result: ticket not found or not done");
+  if (it->second.status == QueryStatus::Error)
+    throw std::runtime_error("query failed: " + it->second.error);
+  if (it->second.status != QueryStatus::Done)
+    throw std::runtime_error("query_queue_result: ticket not done yet");
+  std::vector<uint8_t> out = std::move(it->second.data);
+  queue.results.erase(it);
+  return out;
 }
 
 // ======================== Client ========================

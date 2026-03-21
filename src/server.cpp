@@ -515,10 +515,45 @@ PirServer::fast_expand_qry(std::size_t client_id,seal::Ciphertext &ciphertext) c
 //   return cts;
 // }
 
+// ======================== Client key LRU helpers ========================
+
+void PirServer::touch_client(size_t client_id) {
+  auto it = lru_pos_.find(client_id);
+  if (it != lru_pos_.end()) {
+    lru_order_.erase(it->second);
+  }
+  lru_order_.push_back(client_id);
+  lru_pos_[client_id] = std::prev(lru_order_.end());
+}
+
+void PirServer::evict_if_full() {
+  while (lru_order_.size() > MAX_CLIENTS) {
+    size_t victim = lru_order_.front();
+    lru_order_.pop_front();
+    lru_pos_.erase(victim);
+    client_galois_keys_.erase(victim);
+    client_gsw_keys_.erase(victim);
+  }
+}
+
+void PirServer::remove_client_keys(const size_t client_id) {
+  client_galois_keys_.erase(client_id);
+  client_gsw_keys_.erase(client_id);
+  auto it = lru_pos_.find(client_id);
+  if (it != lru_pos_.end()) {
+    lru_order_.erase(it->second);
+    lru_pos_.erase(it);
+  }
+}
+
+// ======================== Client key registration ========================
+
 void PirServer::set_client_galois_key(const size_t client_id, std::stringstream &galois_stream) {
   seal::GaloisKeys client_key;
   client_key.load(context_, galois_stream);
   client_galois_keys_[client_id] = client_key;
+  touch_client(client_id);
+  evict_if_full();
 }
 
 void PirServer::set_client_gsw_key(const size_t client_id, std::stringstream &gsw_stream) {
@@ -535,6 +570,8 @@ void PirServer::set_client_gsw_key(const size_t client_id, std::stringstream &gs
   key_gsw_.gsw_ntt_negacyclic_harvey(gsw_key); // transform the GSW ciphertext to NTT form
 
   client_gsw_keys_[client_id] = gsw_key;
+  touch_client(client_id);
+  evict_if_full();
 }
 
 
@@ -558,8 +595,10 @@ Entry PirServer::direct_get_entry(const size_t entry_idx) const {
 
 
 seal::Ciphertext PirServer::make_query(const size_t client_id, std::stringstream &query_stream) {
+  touch_client(client_id);
+
   // receive the query from the client
-  seal::Ciphertext query; 
+  seal::Ciphertext query;
   query.load(context_, query_stream);
 
   // ========================== Expansion & conversion ==========================

@@ -71,10 +71,49 @@ void server_set_gsw_key(OnionPirServer &server,
                         uint64_t client_id,
                         const std::vector<uint8_t> &key_bytes);
 
-/// Answer a PIR query. Returns the serialized response bytes.
+/// Manually remove a client's cached keys.
+void server_remove_client(OnionPirServer &server, uint64_t client_id);
+
+/// Answer a PIR query synchronously. Returns the serialized response bytes.
 std::vector<uint8_t> server_answer_query(OnionPirServer &server,
                                          uint64_t client_id,
                                          const std::vector<uint8_t> &query_bytes);
+
+// -------- Async query queue --------
+// Queries are serialized through a single worker thread.
+// Submit returns a ticket; poll with query_status / collect with query_result.
+
+class OnionPirQueryQueue;
+
+/// Create a query queue backed by a worker thread.  Holds a reference to the server.
+std::unique_ptr<OnionPirQueryQueue> new_query_queue(OnionPirServer &server);
+
+/// Stop the queue and join its worker thread.
+void query_queue_stop(OnionPirQueryQueue &queue);
+
+/// Submit a query. Returns a ticket ID immediately.
+uint64_t query_queue_submit(OnionPirQueryQueue &queue,
+                            uint64_t client_id,
+                            const std::vector<uint8_t> &query_bytes);
+
+/// Status of a queued query.
+enum class QueryStatus : uint8_t {
+  Queued     = 0,   // waiting in line
+  Processing = 1,   // currently being answered
+  Done       = 2,   // result ready
+  Error      = 3,   // query failed
+  NotFound   = 4,   // unknown ticket
+};
+
+/// Check the status of a ticket.
+QueryStatus query_queue_status(const OnionPirQueryQueue &queue, uint64_t ticket);
+
+/// How many queries are ahead of this ticket (0 when Processing/Done/Error).
+uint64_t query_queue_position(const OnionPirQueryQueue &queue, uint64_t ticket);
+
+/// Retrieve the result for a completed ticket. Removes it from the queue.
+/// Throws if the ticket is not Done.
+std::vector<uint8_t> query_queue_result(OnionPirQueryQueue &queue, uint64_t ticket);
 
 // -------- Client --------
 
