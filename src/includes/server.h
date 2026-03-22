@@ -34,6 +34,37 @@ public:
   void save_db_to_file(const std::string &path) const;
 
   /**
+   * Attach a shared NTT-expanded database with per-instance indirection.
+   * Replaces push_chunk + preprocess for this instance.
+   *
+   * @param shared_ntt_store  Level-major shared NTT data (all entries, contiguous).
+   *                          Layout: shared_ntt_store[level * shared_store_num_entries + entry_id]
+   *                          Caller must ensure this memory outlives the server.
+   * @param shared_store_num_entries  Number of entries in the shared store.
+   * @param index_table       Per-instance mapping: index_table[logical_pos] = entry_id in shared store.
+   *                          Length must equal num_pt (fst_dim_sz * other_dim_sz).
+   *                          Caller must ensure this memory outlives the server.
+   * @param index_table_len   Length of the index table (must == num_pt_).
+   */
+  void set_shared_database(
+      const uint64_t* shared_ntt_store,
+      size_t shared_store_num_entries,
+      const uint32_t* index_table,
+      size_t index_table_len
+  );
+
+  /**
+   * NTT-expand a single raw entry into level-major coefficient form.
+   * Used for offline preparation of the shared NTT store.
+   *
+   * @param raw_entry  Raw entry bytes (exactly entry_size bytes, zero-padded if shorter).
+   * @param raw_len    Length of raw_entry in bytes.
+   * @param dst        Output buffer for coeff_val_cnt uint64_t values.
+   *                   dst[level] = NTT coefficient at level for this entry.
+   */
+  void ntt_expand_entry(const uint8_t* raw_entry, size_t raw_len, uint64_t* dst) const;
+
+  /**
    * Load a preprocessed database from file via mmap (zero-copy).
    * Returns true if the file exists and config matches. Returns false otherwise
    * (caller should fall back to gen_data).
@@ -101,6 +132,13 @@ private:
   uint64_t *db_aligned_mmap_ = nullptr;    // mmap'd database (non-owned, munmap in destructor)
   size_t db_aligned_mmap_len_ = 0;         // total mmap length including header
   int db_aligned_mmap_fd_ = -1;            // file descriptor for mmap
+
+  // Shared database mode (indirect access via index table)
+  const uint64_t* shared_ntt_store_ = nullptr;   // non-owned: level-major shared NTT data
+  size_t shared_store_num_entries_ = 0;
+  const uint32_t* index_table_ = nullptr;        // non-owned: logical_pos → entry_id
+  size_t index_table_len_ = 0;
+  bool use_shared_db_ = false;
   std::vector<uint128_t> inter_res_; // pointer to the intermediate result vector for fst dim
   PirParams pir_params_;
   GSWEval key_gsw_;

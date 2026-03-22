@@ -43,6 +43,7 @@ PirParamsInfo get_pir_params_info(uint64_t num_entries) {
   info.fst_dim_sz     = params.get_fst_dim_sz();
   info.other_dim_sz   = params.get_other_dim_sz();
   info.poly_degree    = DatabaseConstants::PolyDegree;
+  info.coeff_val_cnt  = params.get_coeff_val_cnt();
   info.db_size_mb     = params.get_DBSize_MB();
   info.physical_size_mb = params.get_physical_storage_MB();
   return info;
@@ -87,6 +88,25 @@ void server_push_chunk(OnionPirServer &server,
 
 void server_preprocess(OnionPirServer &server) {
   server.inner.preprocess_db();
+}
+
+void server_set_shared_database(
+    OnionPirServer &server,
+    const uint64_t *shared_ntt_store,
+    size_t shared_store_num_entries,
+    const uint32_t *index_table,
+    size_t index_table_len) {
+  server.inner.set_shared_database(
+      shared_ntt_store, shared_store_num_entries,
+      index_table, index_table_len);
+}
+
+void server_ntt_expand_entry(
+    const OnionPirServer &server,
+    const uint8_t *raw_entry,
+    size_t raw_len,
+    uint64_t *dst) {
+  server.inner.ntt_expand_entry(raw_entry, raw_len, dst);
 }
 
 void server_set_galois_key(OnionPirServer &server,

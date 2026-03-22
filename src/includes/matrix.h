@@ -49,6 +49,20 @@ void mat_mat_128(const uint64_t *__restrict A, const uint64_t *__restrict B,
                  uint128_t *__restrict out, const size_t rows,
                  const size_t cols);
 
+// Indirect first-dimension multiply: gathers entries from a shared level-major
+// NTT store via an index table, then performs the same mat-mat-128 computation.
+// shared_store layout: shared_store[level * shared_num_entries + entry_id]
+void indirect_level_mat_mat_128(
+    const uint64_t *shared_store,
+    size_t shared_num_entries,
+    const uint32_t *index_table,
+    size_t rows,            // other_dim_sz
+    size_t cols,            // fst_dim_sz
+    size_t levels,          // coeff_val_cnt
+    const uint64_t *B_data, // query matrix (fst_dim_sz × 2 × levels)
+    uint128_t *out_data     // output (other_dim_sz × 2 × levels)
+);
+
 // calculate mod after each multiplication. Hence, output will be in uint64_t.
 void level_mat_mat_direct_mod(matrix_t *A, matrix_t *B, matrix_t *out, const seal::Modulus mod);
 

@@ -18,6 +18,7 @@ typedef struct {
   uint64_t fst_dim_sz;
   uint64_t other_dim_sz;
   uint64_t poly_degree;
+  uint64_t coeff_val_cnt;
   double   db_size_mb;
   double   physical_size_mb;
 } CPirParamsInfo;
@@ -58,6 +59,26 @@ void onion_server_push_chunk(OnionPirServerHandle h,
                              const uint8_t *data, size_t data_len,
                              size_t chunk_idx);
 void onion_server_preprocess(OnionPirServerHandle h);
+
+// Attach a shared NTT-expanded database with per-instance indirection.
+// shared_ntt_store: level-major layout [level * num_entries + entry_id], caller-owned.
+// index_table: per-instance mapping of length index_table_len (must == num_pt), caller-owned.
+void onion_server_set_shared_database(
+    OnionPirServerHandle h,
+    const uint64_t *shared_ntt_store,
+    size_t shared_store_num_entries,
+    const uint32_t *index_table,
+    size_t index_table_len
+);
+
+// NTT-expand a single raw entry into dst (coeff_val_cnt uint64_t values).
+// Use onion_get_params_info to determine coeff_val_cnt (= poly_degree * rns_mod_cnt).
+void onion_server_ntt_expand_entry(
+    OnionPirServerHandle h,
+    const uint8_t *raw_entry,
+    size_t raw_len,
+    uint64_t *dst
+);
 
 void onion_server_set_galois_key(OnionPirServerHandle h,
                                  uint64_t client_id,

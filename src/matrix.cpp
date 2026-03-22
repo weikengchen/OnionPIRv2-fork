@@ -239,6 +239,45 @@ void mat_mat_128(const uint64_t *__restrict A, const uint64_t *__restrict B,
 }
 
 
+// ======================== INDIRECT (SHARED STORE) MULTIPLY ========================
+
+// Single-level indirect multiply: gathers from shared_level via index_table.
+static void indirect_mat_mat_128(
+    const uint64_t *__restrict shared_level,
+    const uint32_t *__restrict index_table,
+    const uint64_t *__restrict B,
+    uint128_t *__restrict out,
+    const size_t rows, const size_t cols) {
+  for (size_t i = 0; i < rows; i++) {
+    uint128_t t0 = 0, t1 = 0;
+    const size_t offset = i * cols;
+    #pragma GCC unroll 32
+    for (size_t k = 0; k < cols; k++) {
+      uint64_t a_val = shared_level[index_table[offset + k]];
+      t0 += a_val * (uint128_t)B[2 * k];
+      t1 += a_val * (uint128_t)B[2 * k + 1];
+    }
+    out[2 * i] = t0;
+    out[2 * i + 1] = t1;
+  }
+}
+
+void indirect_level_mat_mat_128(
+    const uint64_t *shared_store,
+    size_t shared_num_entries,
+    const uint32_t *index_table,
+    size_t rows, size_t cols, size_t levels,
+    const uint64_t *B_data, uint128_t *out_data) {
+  #pragma omp parallel for schedule(static)
+  for (size_t level = 0; level < levels; ++level) {
+    const uint64_t *shared_level = shared_store + level * shared_num_entries;
+    const uint64_t *B_ptr = B_data + level * (cols * 2);
+    uint128_t *C_ptr = out_data + level * (rows * 2);
+    indirect_mat_mat_128(shared_level, index_table, B_ptr, C_ptr, rows, cols);
+  }
+}
+
+
 void level_mat_mat_direct_mod(matrix_t *A, matrix_t *B, matrix_t *out, const seal::Modulus mod) {
   const size_t rows = A->rows;
   const size_t cols = A->cols;

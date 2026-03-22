@@ -57,6 +57,7 @@ struct CPirParamsInfo {
     fst_dim_sz: u64,
     other_dim_sz: u64,
     poly_degree: u64,
+    coeff_val_cnt: u64,
     db_size_mb: f64,
     physical_size_mb: f64,
 }
@@ -76,6 +77,19 @@ extern "C" {
     fn onion_server_save_db(h: ServerHandle, path: *const i8);
     fn onion_server_push_chunk(h: ServerHandle, data: *const u8, data_len: usize, chunk_idx: usize);
     fn onion_server_preprocess(h: ServerHandle);
+    fn onion_server_set_shared_database(
+        h: ServerHandle,
+        shared_ntt_store: *const u64,
+        shared_store_num_entries: usize,
+        index_table: *const u32,
+        index_table_len: usize,
+    );
+    fn onion_server_ntt_expand_entry(
+        h: ServerHandle,
+        raw_entry: *const u8,
+        raw_len: usize,
+        dst: *mut u64,
+    );
     fn onion_server_set_galois_key(h: ServerHandle, client_id: u64, key: *const u8, key_len: usize);
     fn onion_server_set_gsw_key(h: ServerHandle, client_id: u64, key: *const u8, key_len: usize);
     fn onion_server_remove_client(h: ServerHandle, client_id: u64);
@@ -144,6 +158,9 @@ pub struct ParamsInfo {
     pub other_dim_sz: u64,
     /// SEAL polynomial degree (compile-time constant: 2048 or 4096).
     pub poly_degree: u64,
+    /// Number of uint64 values per NTT-expanded plaintext (poly_degree × rns_mod_cnt).
+    /// This is the number of coefficients per entry in the shared NTT store.
+    pub coeff_val_cnt: u64,
     /// Logical DB size in MB.
     pub db_size_mb: f64,
     /// NTT-expanded physical storage in MB.
@@ -187,6 +204,7 @@ pub fn params_info(num_entries: u64) -> ParamsInfo {
         fst_dim_sz: c.fst_dim_sz,
         other_dim_sz: c.other_dim_sz,
         poly_degree: c.poly_degree,
+        coeff_val_cnt: c.coeff_val_cnt,
         db_size_mb: c.db_size_mb,
         physical_size_mb: c.physical_size_mb,
     }
@@ -241,6 +259,55 @@ impl Server {
     /// This is expensive (seconds to minutes depending on DB size). Call once, then `save_db`.
     pub fn preprocess(&mut self) {
         unsafe { onion_server_preprocess(self.handle) }
+    }
+
+    /// Attach a shared NTT-expanded database with per-instance indirection.
+    /// Replaces `push_chunk` + `preprocess` for this instance.
+    ///
+    /// # Arguments
+    /// * `shared_ntt_store` - Pointer to level-major shared NTT data.
+    ///   Layout: `store[level * shared_num_entries + entry_id]`.
+    ///   Must remain valid for the lifetime of this server.
+    /// * `shared_num_entries` - Number of entries in the shared store.
+    /// * `index_table` - Per-instance mapping: `index_table[logical_pos] = entry_id`.
+    ///   Length must equal `params.num_plaintexts` (`fst_dim_sz * other_dim_sz`).
+    ///   The slice must remain valid for the lifetime of this server.
+    ///
+    /// # Safety
+    /// The caller must ensure `shared_ntt_store` points to at least
+    /// `coeff_val_cnt * shared_num_entries` uint64 values and remains valid.
+    pub unsafe fn set_shared_database(
+        &mut self,
+        shared_ntt_store: *const u64,
+        shared_num_entries: usize,
+        index_table: &[u32],
+    ) {
+        onion_server_set_shared_database(
+            self.handle,
+            shared_ntt_store,
+            shared_num_entries,
+            index_table.as_ptr(),
+            index_table.len(),
+        );
+    }
+
+    /// NTT-expand a single raw entry into level-major coefficient form.
+    /// Used for offline preparation of the shared NTT store.
+    ///
+    /// `coeff_val_cnt` is available from [`params_info`].
+    /// Returns `coeff_val_cnt` uint64 values. The caller scatters
+    /// `result[level]` to `shared_store[level * num_entries + entry_id]`.
+    pub fn ntt_expand_entry(&self, raw_entry: &[u8], coeff_val_cnt: usize) -> Vec<u64> {
+        let mut dst = vec![0u64; coeff_val_cnt];
+        unsafe {
+            onion_server_ntt_expand_entry(
+                self.handle,
+                raw_entry.as_ptr(),
+                raw_entry.len(),
+                dst.as_mut_ptr(),
+            );
+        }
+        dst
     }
 
     /// Register a client's Galois keys. Required before answering queries from this client.

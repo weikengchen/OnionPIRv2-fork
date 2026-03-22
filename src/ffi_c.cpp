@@ -40,6 +40,7 @@ extern "C" CPirParamsInfo onion_get_params_info(uint64_t num_entries) {
   c.fst_dim_sz     = info.fst_dim_sz;
   c.other_dim_sz   = info.other_dim_sz;
   c.poly_degree    = info.poly_degree;
+  c.coeff_val_cnt  = info.coeff_val_cnt;
   c.db_size_mb     = info.db_size_mb;
   c.physical_size_mb = info.physical_size_mb;
   return c;
@@ -77,6 +78,26 @@ extern "C" void onion_server_push_chunk(OnionPirServerHandle h,
 extern "C" void onion_server_preprocess(OnionPirServerHandle h) {
   auto &srv = *static_cast<OnionPirServer *>(h);
   server_preprocess(srv);
+}
+
+extern "C" void onion_server_set_shared_database(
+    OnionPirServerHandle h,
+    const uint64_t *shared_ntt_store,
+    size_t shared_store_num_entries,
+    const uint32_t *index_table,
+    size_t index_table_len) {
+  auto &srv = *static_cast<OnionPirServer *>(h);
+  server_set_shared_database(srv, shared_ntt_store, shared_store_num_entries,
+                             index_table, index_table_len);
+}
+
+extern "C" void onion_server_ntt_expand_entry(
+    OnionPirServerHandle h,
+    const uint8_t *raw_entry,
+    size_t raw_len,
+    uint64_t *dst) {
+  auto &srv = *static_cast<OnionPirServer *>(h);
+  server_ntt_expand_entry(srv, raw_entry, raw_len, dst);
 }
 
 extern "C" void onion_server_set_galois_key(OnionPirServerHandle h,

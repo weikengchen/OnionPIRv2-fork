@@ -22,6 +22,7 @@ struct PirParamsInfo {
   uint64_t fst_dim_sz;
   uint64_t other_dim_sz;
   uint64_t poly_degree;
+  uint64_t coeff_val_cnt;     // poly_degree * rns_mod_cnt (uint64s per NTT plaintext)
   double   db_size_mb;        // logical DB size
   double   physical_size_mb;  // NTT-expanded storage
 };
@@ -62,6 +63,29 @@ void server_push_chunk(OnionPirServer &server,
 /// Run NTT preprocessing + realignment after all chunks are pushed.
 /// This is the expensive one-time step.
 void server_preprocess(OnionPirServer &server);
+
+/// Attach a shared NTT-expanded database with per-instance indirection.
+/// Replaces push_chunk + preprocess for this instance.
+/// shared_ntt_store: level-major layout [level * num_entries + entry_id].
+/// index_table: per-instance mapping, length = padded num_entries (num_pt).
+/// Both pointers must outlive the server.
+void server_set_shared_database(
+    OnionPirServer &server,
+    const uint64_t *shared_ntt_store,
+    size_t shared_store_num_entries,
+    const uint32_t *index_table,
+    size_t index_table_len
+);
+
+/// NTT-expand a single raw entry into coeff_val_cnt uint64_t values.
+/// Used for offline preparation of the shared NTT store.
+/// dst must have space for coeff_val_cnt uint64_t values.
+void server_ntt_expand_entry(
+    const OnionPirServer &server,
+    const uint8_t *raw_entry,
+    size_t raw_len,
+    uint64_t *dst
+);
 
 /// Register a client's Galois keys (serialized bytes from client_generate_galois_keys).
 void server_set_galois_key(OnionPirServer &server,

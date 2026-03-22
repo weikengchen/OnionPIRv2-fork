@@ -101,6 +101,77 @@ void PirServer::preprocess_db() {
   realign_db();
 }
 
+void PirServer::set_shared_database(
+    const uint64_t* shared_ntt_store,
+    size_t shared_store_num_entries,
+    const uint32_t* index_table,
+    size_t index_table_len) {
+  if (index_table_len != num_pt_) {
+    throw std::invalid_argument(
+        "set_shared_database: index_table_len (" + std::to_string(index_table_len) +
+        ") must equal num_pt (" + std::to_string(num_pt_) + ")");
+  }
+
+  shared_ntt_store_ = shared_ntt_store;
+  shared_store_num_entries_ = shared_store_num_entries;
+  index_table_ = index_table;
+  index_table_len_ = index_table_len;
+  use_shared_db_ = true;
+
+  // Release per-instance database memory — shared store replaces it
+  db_.reset();
+  db_aligned_.reset();
+
+  // Release mmap if active
+  if (db_aligned_mmap_) {
+    void *base = reinterpret_cast<char *>(db_aligned_mmap_) - sizeof(uint64_t) * 4;
+    munmap(base, db_aligned_mmap_len_);
+    db_aligned_mmap_ = nullptr;
+    db_aligned_mmap_len_ = 0;
+  }
+  if (db_aligned_mmap_fd_ >= 0) {
+    close(db_aligned_mmap_fd_);
+    db_aligned_mmap_fd_ = -1;
+  }
+}
+
+void PirServer::ntt_expand_entry(const uint8_t* raw_entry, size_t raw_len, uint64_t* dst) const {
+  const size_t entry_size = pir_params_.get_entry_size();
+  const size_t bits_per_coeff = pir_params_.get_num_bits_per_coeff();
+  const size_t coeff_val_cnt = pir_params_.get_coeff_val_cnt();
+  const uint128_t coeff_mask = (uint128_t(1) << bits_per_coeff) - 1;
+
+  // Pack raw bytes into plaintext coefficients (same logic as push_database_chunk)
+  seal::Plaintext plaintext(DatabaseConstants::PolyDegree);
+  size_t index = 0;
+  uint128_t data_buffer = 0;
+  size_t data_offset = 0;
+
+  const size_t bytes_to_pack = std::min(raw_len, entry_size);
+  for (size_t k = 0; k < bytes_to_pack; k++) {
+    data_buffer += uint128_t(raw_entry[k]) << data_offset;
+    data_offset += 8;
+    while (data_offset >= bits_per_coeff) {
+      plaintext[index] = data_buffer & coeff_mask;
+      index++;
+      data_buffer >>= bits_per_coeff;
+      data_offset -= bits_per_coeff;
+    }
+  }
+  if (data_offset > 0) {
+    plaintext[index] = data_buffer & coeff_mask;
+    index++;
+  }
+
+  // NTT transform
+  evaluator_.transform_to_ntt_inplace(plaintext, context_.first_parms_id());
+
+  // Copy NTT coefficients to output in natural order.
+  // Caller scatters dst[level] to shared_store[level * num_entries + entry_id].
+  const uint64_t* pt_data = plaintext.data();
+  std::memcpy(dst, pt_data, coeff_val_cnt * sizeof(uint64_t));
+}
+
 void PirServer::prep_query(const std::vector<seal::Ciphertext> &fst_dim_query,
                            std::vector<uint64_t> &query_data) {
   const size_t fst_dim_sz = pir_params_.get_fst_dim_sz();       // 256
@@ -173,14 +244,21 @@ PirServer::evaluate_first_dim(std::vector<seal::Ciphertext> &fst_dim_query) {
   vector of size coeff_val_cnt. In OnionPIRv1, the first dimension is doing the 
   component wise matrix multiplication. Further details can be found in the "matrix.h" file.
   */
-  // prepare the matrices
-  matrix_t db_mat { get_db_ptr(), other_dim_sz, fst_dim_sz, coeff_val_cnt };
-  matrix_t query_mat { query_data.data(), fst_dim_sz, 2, coeff_val_cnt };
-  matrix128_t inter_res_mat { inter_res_.data(), other_dim_sz, 2, coeff_val_cnt };
+  // prepare the matrices and run first-dimension multiply
   TIME_START(CORE_TIME);
-  // level_mat_mult_128(&db_mat, &query_mat, &inter_res_mat);
-  // TODO: optimize the mat_mat_128 inside this function.
-  naive_level_mat_mat_128(&db_mat, &query_mat, &inter_res_mat);
+  if (use_shared_db_) {
+    // Indirect multiply: gather from shared store via index table
+    indirect_level_mat_mat_128(
+        shared_ntt_store_, shared_store_num_entries_, index_table_,
+        other_dim_sz, fst_dim_sz, coeff_val_cnt,
+        query_data.data(), inter_res_.data());
+  } else {
+    // Direct multiply: contiguous per-instance database
+    matrix_t db_mat { get_db_ptr(), other_dim_sz, fst_dim_sz, coeff_val_cnt };
+    matrix_t query_mat { query_data.data(), fst_dim_sz, 2, coeff_val_cnt };
+    matrix128_t inter_res_mat { inter_res_.data(), other_dim_sz, 2, coeff_val_cnt };
+    naive_level_mat_mat_128(&db_mat, &query_mat, &inter_res_mat);
+  }
   TIME_END(CORE_TIME);
 
   // ========== transform the intermediate to coefficient form. Delay the modulus operation ==========
