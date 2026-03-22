@@ -225,17 +225,17 @@ size_t PirClient::write_gsw_to_stream(const std::vector<Ciphertext> &gsw, std::s
 }
 
 size_t PirClient::create_galois_keys(std::stringstream &galois_key_stream) {
-  std::vector<uint32_t> galois_elts;
+  // Generate galois elements for the MAXIMUM possible expansion height.
+  // This makes the key usable by any server regardless of num_entries,
+  // since all servers use a subset of these elements.
+  // The cost is a few extra key-switching keys (~30KB), negligible vs total key size.
+  constexpr size_t poly_degree = DatabaseConstants::PolyDegree;
+  const size_t max_expan_height = static_cast<size_t>(std::ceil(std::log2(poly_degree)));
 
-  // This is related to the unpacking algorithm.
-  // expansion height is the height of the expansion tree such that
-  // 2^get_expan_height() is equal to the number of packed values padded to the next power of 2.
-  const size_t expan_height = pir_params_.get_expan_height();
-  const size_t poly_degree = DatabaseConstants::PolyDegree;
-  for (size_t i = 0; i < expan_height; i++) {
+  std::vector<uint32_t> galois_elts;
+  for (size_t i = 0; i < max_expan_height; i++) {
     galois_elts.push_back(1 + (poly_degree >> i));
   }
-  // PRINT_INT_ARRAY("galois_elts: ", galois_elts, galois_elts.size());
   auto written_size = keygen_.create_galois_keys(galois_elts).save(galois_key_stream);
   return written_size;
 }
