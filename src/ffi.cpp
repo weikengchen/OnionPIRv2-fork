@@ -3,39 +3,8 @@
 // Each function wraps the internal PirServer / PirClient classes,
 // converting SEAL's stringstream serialization to/from flat byte vectors.
 
-#include "ffi.h"
-#include "server.h"
-#include "client.h"
-#include "pir.h"
+#include "ffi_internal.h"
 #include "database_constants.h"
-
-#include <sstream>
-#include <cstring>
-#include <stdexcept>
-#include <thread>
-#include <mutex>
-#include <condition_variable>
-#include <deque>
-#include <atomic>
-#include <unordered_map>
-
-// ======================== Opaque wrapper definitions ========================
-
-class OnionPirServer {
-public:
-  PirParams params;
-  PirServer inner;
-
-  OnionPirServer() : params(), inner(params) {}
-};
-
-class OnionPirClient {
-public:
-  PirParams params;
-  PirClient inner;
-
-  OnionPirClient() : params(), inner(params) {}
-};
 
 // ======================== Helpers ========================
 
@@ -59,8 +28,14 @@ static std::vector<uint8_t> stream_to_bytes(std::stringstream &ss) {
 
 // ======================== Params ========================
 
-PirParamsInfo get_pir_params_info() {
-  PirParams params;
+static size_t resolve_num_entries(uint64_t num_entries) {
+  return num_entries == 0
+      ? static_cast<size_t>(DatabaseConstants::NumEntries)
+      : static_cast<size_t>(num_entries);
+}
+
+PirParamsInfo get_pir_params_info(uint64_t num_entries) {
+  PirParams params(resolve_num_entries(num_entries));
   PirParamsInfo info;
   info.num_entries    = params.get_num_entries();
   info.entry_size     = params.get_entry_size();
@@ -75,8 +50,8 @@ PirParamsInfo get_pir_params_info() {
 
 // ======================== Server ========================
 
-std::unique_ptr<OnionPirServer> new_server() {
-  return std::make_unique<OnionPirServer>();
+std::unique_ptr<OnionPirServer> new_server(uint64_t num_entries) {
+  return std::make_unique<OnionPirServer>(resolve_num_entries(num_entries));
 }
 
 bool server_load_db(OnionPirServer &server, const std::string &path) {
@@ -111,13 +86,6 @@ void server_push_chunk(OnionPirServer &server,
 }
 
 void server_preprocess(OnionPirServer &server) {
-  // Access the private methods via the friend class trick:
-  // We need preprocess_ntt + realign_db, which are called by gen_data.
-  // Since they're private, we expose a public wrapper.
-  // For now, we call them through a minimal public path.
-  //
-  // NOTE: This requires adding a public preprocess() method to PirServer.
-  // See the comment in server.h.
   server.inner.preprocess_db();
 }
 
@@ -153,76 +121,47 @@ std::vector<uint8_t> server_answer_query(OnionPirServer &server,
 
 // ======================== Async query queue ========================
 
-struct QueuedQuery {
-  uint64_t ticket;
-  uint64_t client_id;
-  std::vector<uint8_t> query_bytes;
-};
+OnionPirQueryQueue::OnionPirQueryQueue(OnionPirServer &srv) : server(srv) {
+  worker = std::thread([this]() { run(); });
+}
 
-struct QueryResult {
-  QueryStatus status;
-  std::vector<uint8_t> data;   // populated when Done
-  std::string error;           // populated when Error
-};
-
-class OnionPirQueryQueue {
-public:
-  OnionPirServer &server;
-  std::atomic<uint64_t> next_ticket{1};
-
-  std::mutex mu;
-  std::condition_variable cv;
-  bool stopped = false;
-
-  std::deque<QueuedQuery> pending;            // waiting to be processed
-  uint64_t processing_ticket = 0;             // ticket currently being processed (0 = none)
-  std::unordered_map<uint64_t, QueryResult> results;  // completed (Done/Error)
-
-  std::thread worker;
-
-  explicit OnionPirQueryQueue(OnionPirServer &srv) : server(srv) {
-    worker = std::thread([this]() { run(); });
+OnionPirQueryQueue::~OnionPirQueryQueue() {
+  {
+    std::lock_guard<std::mutex> lk(mu);
+    stopped = true;
   }
+  cv.notify_one();
+  if (worker.joinable()) worker.join();
+}
 
-  ~OnionPirQueryQueue() {
+void OnionPirQueryQueue::run() {
+  while (true) {
+    QueuedQuery job;
+    {
+      std::unique_lock<std::mutex> lk(mu);
+      cv.wait(lk, [&]{ return stopped || !pending.empty(); });
+      if (stopped && pending.empty()) return;
+      job = std::move(pending.front());
+      pending.pop_front();
+      processing_ticket = job.ticket;
+    }
+
+    QueryResult qr;
+    try {
+      qr.data = server_answer_query(server, job.client_id, job.query_bytes);
+      qr.status = QueryStatus::Done;
+    } catch (const std::exception &e) {
+      qr.status = QueryStatus::Error;
+      qr.error = e.what();
+    }
+
     {
       std::lock_guard<std::mutex> lk(mu);
-      stopped = true;
-    }
-    cv.notify_one();
-    if (worker.joinable()) worker.join();
-  }
-
-private:
-  void run() {
-    while (true) {
-      QueuedQuery job;
-      {
-        std::unique_lock<std::mutex> lk(mu);
-        cv.wait(lk, [&]{ return stopped || !pending.empty(); });
-        if (stopped && pending.empty()) return;
-        job = std::move(pending.front());
-        pending.pop_front();
-        processing_ticket = job.ticket;
-      }
-
-      QueryResult qr;
-      try {
-        qr.data = server_answer_query(server, job.client_id, job.query_bytes);
-        qr.status = QueryStatus::Done;
-      } catch (const std::exception &e) {
-        qr.status = QueryStatus::Error;
-        qr.error = e.what();
-      }
-
-      {
-        std::lock_guard<std::mutex> lk(mu);
-        processing_ticket = 0;
-        results[job.ticket] = std::move(qr);
-      }
+      processing_ticket = 0;
+      results[job.ticket] = std::move(qr);
     }
   }
-};
+}
 
 std::unique_ptr<OnionPirQueryQueue> new_query_queue(OnionPirServer &server) {
   return std::make_unique<OnionPirQueryQueue>(server);
@@ -251,12 +190,9 @@ uint64_t query_queue_submit(OnionPirQueryQueue &queue,
 
 QueryStatus query_queue_status(const OnionPirQueryQueue &queue, uint64_t ticket) {
   std::lock_guard<std::mutex> lk(const_cast<std::mutex &>(queue.mu));
-  // Check completed results
   auto it = queue.results.find(ticket);
   if (it != queue.results.end()) return it->second.status;
-  // Currently processing?
   if (queue.processing_ticket == ticket) return QueryStatus::Processing;
-  // In the pending queue?
   for (const auto &q : queue.pending) {
     if (q.ticket == ticket) return QueryStatus::Queued;
   }
@@ -265,16 +201,14 @@ QueryStatus query_queue_status(const OnionPirQueryQueue &queue, uint64_t ticket)
 
 uint64_t query_queue_position(const OnionPirQueryQueue &queue, uint64_t ticket) {
   std::lock_guard<std::mutex> lk(const_cast<std::mutex &>(queue.mu));
-  // Done / Error / Processing → 0
   if (queue.results.count(ticket) || queue.processing_ticket == ticket)
     return 0;
-  // Count how many pending items are ahead
   uint64_t pos = 0;
   for (const auto &q : queue.pending) {
     if (q.ticket == ticket) return pos;
     ++pos;
   }
-  return 0; // NotFound
+  return 0;
 }
 
 std::vector<uint8_t> query_queue_result(OnionPirQueryQueue &queue, uint64_t ticket) {
@@ -293,8 +227,8 @@ std::vector<uint8_t> query_queue_result(OnionPirQueryQueue &queue, uint64_t tick
 
 // ======================== Client ========================
 
-std::unique_ptr<OnionPirClient> new_client() {
-  return std::make_unique<OnionPirClient>();
+std::unique_ptr<OnionPirClient> new_client(uint64_t num_entries) {
+  return std::make_unique<OnionPirClient>(resolve_num_entries(num_entries));
 }
 
 uint64_t client_get_id(const OnionPirClient &client) {
@@ -331,5 +265,5 @@ std::vector<uint8_t> client_decrypt_response(OnionPirClient &client,
   seal::Plaintext plaintext = client.inner.decrypt_reply(response);
   Entry entry = client.inner.get_entry_from_plaintext(
       static_cast<size_t>(entry_index), plaintext);
-  return entry;  // Entry is already std::vector<uint8_t>
+  return entry;
 }

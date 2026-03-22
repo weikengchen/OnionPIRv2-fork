@@ -34,13 +34,15 @@ class OnionPirClient;
 
 // ======================== Free functions ========================
 
-/// Return the compiled-in PIR parameters.
-PirParamsInfo get_pir_params_info();
+/// Return PIR parameters for a given entry count.
+/// If num_entries == 0, uses the compiled-in default.
+PirParamsInfo get_pir_params_info(uint64_t num_entries = 0);
 
 // -------- Server --------
 
-/// Create a new PIR server. Call load_db or populate_db before answering queries.
-std::unique_ptr<OnionPirServer> new_server();
+/// Create a new PIR server with the given number of database entries.
+/// If num_entries == 0, uses the compiled-in default.
+std::unique_ptr<OnionPirServer> new_server(uint64_t num_entries = 0);
 
 /// Try to load a preprocessed (NTT + realigned) database via mmap.
 /// Returns true on success. On false, caller should populate + preprocess.
@@ -117,8 +119,9 @@ std::vector<uint8_t> query_queue_result(OnionPirQueryQueue &queue, uint64_t tick
 
 // -------- Client --------
 
-/// Create a new PIR client.
-std::unique_ptr<OnionPirClient> new_client();
+/// Create a new PIR client. num_entries must match the server's value.
+/// If num_entries == 0, uses the compiled-in default.
+std::unique_ptr<OnionPirClient> new_client(uint64_t num_entries = 0);
 
 /// Get the client's unique ID (used as client_id for server key registration).
 uint64_t client_get_id(const OnionPirClient &client);

@@ -30,3 +30,4 @@ note&analysis/
 PIR_papers/
 preprocessed_db.bin
 rawDB.bin
+rust/onionpir/target/

@@ -17,7 +17,8 @@ typedef uint64_t Key; // key in the key-value pair.
 // ================== CLASS DEFINITIONS ==================
 class PirParams {
 public:
-  PirParams();
+  /// Construct with a runtime entry count. Defaults to DatabaseConstants::NumEntries.
+  explicit PirParams(size_t num_entries = DatabaseConstants::NumEntries);
   // copy constructor
   PirParams(const PirParams &pir_params) = default;
 
@@ -77,7 +78,7 @@ private:
   uint64_t small_q_ = 0; // small modulus used for modulus switching. Use only when rns_mod_cnt == 1
   size_t base_log2_;         // log of base for data RGSW
   size_t base_log2_key_;     // log of base for key RGSW
-  size_t num_entries_ = DatabaseConstants::NumEntries;  // number of entries in the database. Will be padded to multiples of other dimension size.
+  size_t num_entries_;  // number of entries in the database. Will be padded to multiples of other dimension size.
   size_t num_pt_;            // number of plaintexts in the database
   size_t entry_size_;    // size of each entry in bytes
   std::vector<size_t> dims_; // Number of dimensions

@@ -117,6 +117,7 @@ file(GLOB LIB_SRC_FILES
     src/utils.cpp
     src/logging.cpp
     src/ffi.cpp
+    src/ffi_c.cpp
 )
 add_library(onionpir STATIC ${LIB_SRC_FILES})
 target_include_directories(onionpir PUBLIC src/includes)
@@ -125,9 +126,9 @@ if (USE_HEXL AND HEXL_FOUND)
     target_link_libraries(onionpir PUBLIC HEXL::hexl)
 endif()
 
-# Install the library and FFI header for external consumers (e.g. Rust -sys crate)
-install(TARGETS onionpir ARCHIVE DESTINATION lib)
-install(FILES src/includes/ffi.h DESTINATION include/onionpir)
+# Install the library and FFI headers for external consumers (e.g. Rust -sys crate)
+install(TARGETS onionpir seal ARCHIVE DESTINATION lib)
+install(FILES src/includes/ffi.h src/includes/ffi_c.h DESTINATION include/onionpir)
 
 # ==================== Test executable ====================
 add_executable(Onion-PIR src/main.cpp src/tests.cpp)

@@ -26,8 +26,8 @@ seal::EncryptionParameters PirParams::init_seal_params() {
   return params;
 }
 
-PirParams::PirParams()
-    : seal_params_(init_seal_params()), context_(seal_params_) {
+PirParams::PirParams(size_t num_entries)
+    : seal_params_(init_seal_params()), context_(seal_params_), num_entries_(num_entries) {
   // =============== Setting modulus ===============
   const uint64_t pt_mod = seal_params_.plain_modulus().value();
   // calculate the entry size in bytes automatically.

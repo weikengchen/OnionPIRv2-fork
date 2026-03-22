@@ -1,0 +1,119 @@
+use std::env;
+use std::path::PathBuf;
+use std::process::Command;
+
+fn main() {
+    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    let repo_root = manifest_dir.join("../..").canonicalize().unwrap();
+
+    // The `cmake` crate injects Clang-specific flags (--target=arm64-apple-macosx)
+    // that GCC doesn't understand. Instead, drive CMake directly via Command.
+    let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
+    let build_dir = out_dir.join("build");
+    std::fs::create_dir_all(&build_dir).unwrap();
+
+    // --- Step 1: Find GCC on macOS ---
+    let (gcc, gxx) = if cfg!(target_os = "macos") {
+        find_homebrew_gcc().expect("Could not find Homebrew GCC (g++-13..15). Install with: brew install gcc")
+    } else {
+        ("gcc".to_string(), "g++".to_string())
+    };
+
+    // --- Step 2: CMake configure ---
+    // Clear environment variables that Cargo sets which inject Clang-specific
+    // flags (--target=arm64-apple-macosx) that GCC doesn't understand.
+    let configure_status = Command::new("cmake")
+        .current_dir(&build_dir)
+        .env_remove("CFLAGS")
+        .env_remove("CXXFLAGS")
+        .env_remove("ASMFLAGS")
+        .env_remove("CC")
+        .env_remove("CXX")
+        .env_remove("TARGET")
+        .env_remove("HOST")
+        .arg(&repo_root)
+        .args(["-DCMAKE_BUILD_TYPE=Benchmark"])
+        .args(["-DUSE_HEXL=OFF"])
+        .arg(format!("-DCMAKE_C_COMPILER={}", gcc))
+        .arg(format!("-DCMAKE_CXX_COMPILER={}", gxx))
+        .arg(format!("-DCMAKE_INSTALL_PREFIX={}", out_dir.display()))
+        .status()
+        .expect("Failed to run cmake configure");
+    assert!(configure_status.success(), "CMake configure failed");
+
+    // --- Step 3: CMake build ---
+    let nproc = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    let build_status = Command::new("cmake")
+        .current_dir(&build_dir)
+        .args(["--build", "."])
+        .args(["--target", "onionpir"])
+        .args(["-j", &nproc.to_string()])
+        .status()
+        .expect("Failed to run cmake build");
+    assert!(build_status.success(), "CMake build failed");
+
+    // --- Step 4: Emit linker directives ---
+    // libonionpir.a is in the cmake build root
+    println!("cargo:rustc-link-search=native={}", build_dir.display());
+    println!("cargo:rustc-link-lib=static=onionpir");
+
+    // libseal-4.1.a is under extern/SEAL/lib/ in the cmake build tree
+    println!(
+        "cargo:rustc-link-search=native={}/extern/SEAL/lib",
+        build_dir.display()
+    );
+    println!("cargo:rustc-link-lib=static=seal-4.1");
+
+    // Link OpenMP (libgomp) and C++ standard library
+    if cfg!(target_os = "macos") {
+        if let Some(gcc_lib) = find_gcc_lib_dir() {
+            println!("cargo:rustc-link-search=native={}", gcc_lib);
+        }
+        println!("cargo:rustc-link-lib=dylib=gomp");
+        println!("cargo:rustc-link-lib=dylib=stdc++");
+    } else {
+        println!("cargo:rustc-link-lib=dylib=gomp");
+        println!("cargo:rustc-link-lib=dylib=stdc++");
+    }
+
+    // --- Step 5: Rerun triggers ---
+    for path in &[
+        "src/ffi.cpp",
+        "src/ffi_c.cpp",
+        "src/includes/ffi.h",
+        "src/includes/ffi_c.h",
+        "CMakeLists.txt",
+    ] {
+        println!("cargo:rerun-if-changed={}/{}", repo_root.display(), path);
+    }
+}
+
+/// Find Homebrew GCC (g++-15, g++-14, g++-13)
+fn find_homebrew_gcc() -> Option<(String, String)> {
+    for ver in &["15", "14", "13"] {
+        let gxx = format!("/opt/homebrew/bin/g++-{}", ver);
+        let gcc = format!("/opt/homebrew/bin/gcc-{}", ver);
+        if std::path::Path::new(&gxx).exists() {
+            return Some((gcc, gxx));
+        }
+    }
+    None
+}
+
+/// Find the GCC runtime library directory (for libgomp)
+fn find_gcc_lib_dir() -> Option<String> {
+    for ver in &["15", "14", "13"] {
+        for minor in &["2.0", "1.0"] {
+            let dir = format!(
+                "/opt/homebrew/Cellar/gcc/{}.{}/lib/gcc/current",
+                ver, minor
+            );
+            if std::path::Path::new(&dir).exists() {
+                return Some(dir);
+            }
+        }
+    }
+    None
+}
