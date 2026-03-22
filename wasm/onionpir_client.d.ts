@@ -34,12 +34,15 @@ export interface OnionPirModule {
 
     /**
      * Build a complete cuckoo hash table for a group.
+     * Uses deterministic eviction matching the Rust server exactly.
      * @param entries - Uint32Array of entry IDs assigned to this group
-     * @param keys - Array of 6 hash function keys (as JS array of numbers)
+     * @param keys - Uint32Array of length num_keys*2, encoding each uint64 key
+     *               as [lo32, hi32] pairs to avoid double precision loss.
+     *               Example for 6 keys: Uint32Array of length 12.
      * @param numBins - Table size
      * @returns Uint32Array where table[bin] = entry_id (0xFFFFFFFF for empty)
      */
-    buildCuckooBs1(entries: Uint32Array, keys: Uint32Array | number[], numBins: number): Uint32Array;
+    buildCuckooBs1(entries: Uint32Array, keys: Uint32Array, numBins: number): Uint32Array;
 }
 
 export interface OnionPirClient {
