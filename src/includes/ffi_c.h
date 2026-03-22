@@ -157,6 +157,15 @@ OnionBuf onion_queue_result(OnionPirQueueHandle h, uint64_t ticket);
 OnionPirClientHandle onion_client_new(uint64_t num_entries);
 void onion_client_free(OnionPirClientHandle h);
 
+// Create a client from an existing secret key (from onion_client_export_secret_key).
+// Use this to create per-database clients that share the same encryption keys.
+OnionPirClientHandle onion_client_new_from_sk(uint64_t num_entries,
+                                               uint64_t client_id,
+                                               const uint8_t *sk, size_t sk_len);
+
+// Export the client's secret key. Caller must free with onion_free_buf().
+OnionBuf onion_client_export_secret_key(OnionPirClientHandle h);
+
 uint64_t onion_client_get_id(OnionPirClientHandle h);
 OnionBuf onion_client_generate_galois_keys(OnionPirClientHandle h);
 OnionBuf onion_client_generate_gsw_keys(OnionPirClientHandle h);

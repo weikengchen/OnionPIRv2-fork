@@ -296,6 +296,26 @@ std::unique_ptr<OnionPirClient> new_client(uint64_t num_entries) {
   return std::make_unique<OnionPirClient>(resolve_num_entries(num_entries));
 }
 
+std::unique_ptr<OnionPirClient> new_client_from_secret_key(
+    uint64_t num_entries,
+    uint64_t client_id,
+    const std::vector<uint8_t> &secret_key_bytes) {
+  size_t n = resolve_num_entries(num_entries);
+  // Load the secret key using a temporary context (all contexts are identical
+  // since SEAL params are compile-time constants).
+  seal::SEALContext context(PirParams::init_seal_params());
+  seal::SecretKey sk;
+  auto ss = bytes_to_stream(secret_key_bytes);
+  sk.load(context, ss);
+  return std::make_unique<OnionPirClient>(n, static_cast<size_t>(client_id), sk);
+}
+
+std::vector<uint8_t> client_export_secret_key(const OnionPirClient &client) {
+  std::stringstream ss;
+  client.inner.get_secret_key().save(ss);
+  return stream_to_bytes(ss);
+}
+
 uint64_t client_get_id(const OnionPirClient &client) {
   return static_cast<uint64_t>(client.inner.get_client_id());
 }

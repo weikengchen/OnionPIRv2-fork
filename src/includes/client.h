@@ -4,6 +4,9 @@
 class PirClient {
 public:
   PirClient(const PirParams &pirparms);
+  /// Construct from an existing secret key (deserialized from bytes).
+  /// Shares the same encryption scheme but uses the given key and client_id.
+  PirClient(const PirParams &pirparms, size_t client_id, const seal::SecretKey &sk);
   ~PirClient() = default;
 
   /**
@@ -35,6 +38,7 @@ public:
   
   Entry get_entry_from_plaintext(const size_t entry_index, const seal::Plaintext plaintext) const;
   inline size_t get_client_id() const { return client_id_; }
+  inline const seal::SecretKey &get_secret_key() const { return secret_key_; }
 
   inline void test_budget(seal::Ciphertext &ct) {
     // calculate the noise budget of the ciphertext

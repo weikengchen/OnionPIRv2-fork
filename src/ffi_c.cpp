@@ -250,6 +250,20 @@ extern "C" void onion_client_free(OnionPirClientHandle h) {
   delete static_cast<OnionPirClient *>(h);
 }
 
+extern "C" OnionPirClientHandle onion_client_new_from_sk(uint64_t num_entries,
+                                                          uint64_t client_id,
+                                                          const uint8_t *sk, size_t sk_len) {
+  auto v = ptr_to_vec(sk, sk_len);
+  auto ptr = new_client_from_secret_key(num_entries, client_id, v);
+  return ptr.release();
+}
+
+extern "C" OnionBuf onion_client_export_secret_key(OnionPirClientHandle h) {
+  auto &c = *static_cast<OnionPirClient *>(h);
+  auto result = client_export_secret_key(c);
+  return vec_to_buf(std::move(result));
+}
+
 extern "C" uint64_t onion_client_get_id(OnionPirClientHandle h) {
   auto &c = *static_cast<OnionPirClient *>(h);
   return client_get_id(c);

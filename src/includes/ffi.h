@@ -183,6 +183,19 @@ void server_set_key_store(OnionPirServer &server, SharedKeyStore &store);
 /// If num_entries == 0, uses the compiled-in default.
 std::unique_ptr<OnionPirClient> new_client(uint64_t num_entries = 0);
 
+/// Create a PIR client from an existing secret key.
+/// The secret key bytes come from client_export_secret_key.
+/// Key generation (galois/GSW) is independent of num_entries, so generate
+/// keys with any client, export the secret key, then create per-database
+/// clients with the correct num_entries for query/decrypt.
+std::unique_ptr<OnionPirClient> new_client_from_secret_key(
+    uint64_t num_entries,
+    uint64_t client_id,
+    const std::vector<uint8_t> &secret_key_bytes);
+
+/// Export the client's secret key as serialized bytes.
+std::vector<uint8_t> client_export_secret_key(const OnionPirClient &client);
+
 /// Get the client's unique ID (used as client_id for server key registration).
 uint64_t client_get_id(const OnionPirClient &client);
 

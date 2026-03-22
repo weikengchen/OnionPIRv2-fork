@@ -14,6 +14,14 @@ PirClient::PirClient(const PirParams &pir_params)
       encryptor_(context_, secret_key_), evaluator_(context_),
       context_mod_q_prime_(init_mod_q_prime()), dims_(pir_params.get_dims()) {}
 
+// constructor from existing secret key
+PirClient::PirClient(const PirParams &pir_params, size_t client_id, const seal::SecretKey &sk)
+    : client_id_(client_id), pir_params_(pir_params),
+      context_(pir_params.get_seal_params()), keygen_(context_, sk),
+      secret_key_(sk), decryptor_(context_, secret_key_),
+      encryptor_(context_, secret_key_), evaluator_(context_),
+      context_mod_q_prime_(init_mod_q_prime()), dims_(pir_params.get_dims()) {}
+
 std::vector<Ciphertext> PirClient::generate_gsw_from_key() {
   std::vector<seal::Ciphertext> gsw_enc; // temporary GSW ciphertext using seal::Ciphertext
   const auto sk_ = secret_key_.data();

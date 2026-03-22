@@ -35,6 +35,8 @@ public:
   PirClient inner;
 
   explicit OnionPirClient(size_t num_entries) : params(num_entries), inner(params) {}
+  OnionPirClient(size_t num_entries, size_t client_id, const seal::SecretKey &sk)
+      : params(num_entries), inner(params, client_id, sk) {}
 };
 
 // ======================== Async query queue ========================

@@ -144,6 +144,13 @@ extern "C" {
     // Client
     fn onion_client_new(num_entries: u64) -> ClientHandle;
     fn onion_client_free(h: ClientHandle);
+    fn onion_client_new_from_sk(
+        num_entries: u64,
+        client_id: u64,
+        sk: *const u8,
+        sk_len: usize,
+    ) -> ClientHandle;
+    fn onion_client_export_secret_key(h: ClientHandle) -> COnionBuf;
     fn onion_client_get_id(h: ClientHandle) -> u64;
     fn onion_client_generate_galois_keys(h: ClientHandle) -> COnionBuf;
     fn onion_client_generate_gsw_keys(h: ClientHandle) -> COnionBuf;
@@ -538,10 +545,36 @@ pub struct Client {
 
 impl Client {
     /// Create a new PIR client. `num_entries` must match the server's value.
+    ///
+    /// Key generation (galois/GSW) is independent of `num_entries`, so you can
+    /// create a client with any value just for key generation, then use
+    /// [`export_secret_key`] + [`new_from_secret_key`] to create per-database
+    /// clients with the correct `num_entries` for query/decrypt.
     pub fn new(num_entries: u64) -> Self {
         let handle = unsafe { onion_client_new(num_entries) };
         assert!(!handle.is_null(), "failed to create OnionPirClient");
         Self { handle }
+    }
+
+    /// Create a PIR client from an existing secret key.
+    ///
+    /// The `secret_key` bytes must come from [`export_secret_key`].
+    /// The `client_id` must match the original client's ID.
+    /// `num_entries` controls query generation and response decryption dimensions.
+    pub fn new_from_secret_key(num_entries: u64, client_id: u64, secret_key: &[u8]) -> Self {
+        let handle = unsafe {
+            onion_client_new_from_sk(num_entries, client_id, secret_key.as_ptr(), secret_key.len())
+        };
+        assert!(!handle.is_null(), "failed to create OnionPirClient from secret key");
+        Self { handle }
+    }
+
+    /// Export the secret key as serialized bytes.
+    ///
+    /// Use this to create additional clients with different `num_entries`
+    /// that share the same encryption keys (via [`new_from_secret_key`]).
+    pub fn export_secret_key(&self) -> Vec<u8> {
+        buf_to_vec(unsafe { onion_client_export_secret_key(self.handle) })
     }
 
     /// Get this client's unique ID (used for server key registration).
