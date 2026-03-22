@@ -497,7 +497,9 @@ PirServer::fast_expand_qry(std::size_t client_id,seal::Ciphertext &ciphertext) c
                             pir_params_.get_l() * (dims_.size() - 1); // u
   const size_t expan_height = pir_params_.get_expan_height(); // h
   const size_t w = size_t{1} << expan_height;                 // 2^h
-  const auto &galois_key = client_galois_keys_.at(client_id);
+  const auto &galois_key = shared_key_store_
+      ? shared_key_store_->get_galois_key(client_id)
+      : client_galois_keys_.at(client_id);
   seal::EncryptionParameters params = pir_params_.get_seal_params();
   
   // ============== storage   – index 0 is *unused*, root is slot 1
@@ -624,6 +626,12 @@ void PirServer::remove_client_keys(const size_t client_id) {
   }
 }
 
+// ======================== Shared key store ========================
+
+void PirServer::set_shared_key_store(SharedKeyStore *store) {
+  shared_key_store_ = store;
+}
+
 // ======================== Client key registration ========================
 
 void PirServer::set_client_galois_key(const size_t client_id, std::stringstream &galois_stream) {
@@ -673,7 +681,11 @@ Entry PirServer::direct_get_entry(const size_t entry_idx) const {
 
 
 seal::Ciphertext PirServer::make_query(const size_t client_id, std::stringstream &query_stream) {
-  touch_client(client_id);
+  if (shared_key_store_) {
+    shared_key_store_->touch(client_id);
+  } else {
+    touch_client(client_id);
+  }
 
   // receive the query from the client
   seal::Ciphertext query;
@@ -703,7 +715,10 @@ seal::Ciphertext PirServer::make_query(const size_t client_id, std::stringstream
     // Each query_to_gsw call is independent — parallelize
     #pragma omp parallel for schedule(static)
     for (size_t i = 0; i < num_other_dims; i++) {
-      key_gsw_.query_to_gsw(lwe_vectors[i], client_gsw_keys_[client_id], gsw_vec[i]);
+      const auto &gsw_key = shared_key_store_
+          ? shared_key_store_->get_gsw_key(client_id)
+          : client_gsw_keys_[client_id];
+      key_gsw_.query_to_gsw(lwe_vectors[i], gsw_key, gsw_vec[i]);
     }
   }
   TIME_END(CONVERT_TIME);

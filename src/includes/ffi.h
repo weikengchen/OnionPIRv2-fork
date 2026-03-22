@@ -141,6 +141,42 @@ uint64_t query_queue_position(const OnionPirQueryQueue &queue, uint64_t ticket);
 /// Throws if the ticket is not Done.
 std::vector<uint8_t> query_queue_result(OnionPirQueryQueue &queue, uint64_t ticket);
 
+// -------- Shared key store --------
+
+/// Create a shared key store. All PirServers that share the same SEAL
+/// parameters can reference one store, avoiding per-server deserialization.
+/// If num_entries == 0, uses the compiled-in default.
+std::unique_ptr<SharedKeyStore> new_key_store(uint64_t num_entries = 0);
+
+/// Deserialize and store a client's Galois key.
+void key_store_set_galois_key(SharedKeyStore &store,
+                               uint64_t client_id,
+                               const std::vector<uint8_t> &key_bytes);
+
+/// Deserialize, convert, and NTT-transform a client's GSW key.
+void key_store_set_gsw_key(SharedKeyStore &store,
+                            uint64_t client_id,
+                            const std::vector<uint8_t> &key_bytes);
+
+/// Export the expanded (NTT-transformed) GSW key as a flat uint64 array.
+std::vector<uint64_t> key_store_export_gsw(const SharedKeyStore &store,
+                                            uint64_t client_id);
+
+/// Import a pre-expanded GSW key from a flat uint64 array (skip processing).
+void key_store_import_gsw(SharedKeyStore &store,
+                           uint64_t client_id,
+                           const uint64_t *data,
+                           size_t num_values);
+
+/// Check if both key types are loaded for a client.
+bool key_store_has_client(const SharedKeyStore &store, uint64_t client_id);
+
+/// Remove a client's keys.
+void key_store_remove_client(SharedKeyStore &store, uint64_t client_id);
+
+/// Attach a shared key store to a server (non-owning — store must outlive server).
+void server_set_key_store(OnionPirServer &server, SharedKeyStore &store);
+
 // -------- Client --------
 
 /// Create a new PIR client. num_entries must match the server's value.

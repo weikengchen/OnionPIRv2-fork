@@ -2,6 +2,7 @@
 
 #include "gsw_eval.h"
 #include "pir.h"
+#include "shared_key_store.h"
 #include <optional>
 #include <string>
 #include <list>
@@ -100,6 +101,10 @@ public:
   void set_client_gsw_key(const size_t client_id, std::stringstream &gsw_stream);
   void remove_client_keys(const size_t client_id);
 
+  /// Attach a shared key store. When set, key lookups use the shared store
+  /// instead of per-server maps. The store must outlive this server.
+  void set_shared_key_store(SharedKeyStore *store);
+
 #ifdef _DEBUG
   /**
   Asking the server to return the entry at the given (abstract) index.
@@ -127,6 +132,7 @@ private:
 
   void touch_client(size_t client_id);
   void evict_if_full();
+  SharedKeyStore *shared_key_store_ = nullptr;  // optional shared key store
   Database db_; // pointer to the entire database vector
   std::unique_ptr<uint64_t[]> db_aligned_; // aligned database for fast first dim (owned memory)
   uint64_t *db_aligned_mmap_ = nullptr;    // mmap'd database (non-owned, munmap in destructor)

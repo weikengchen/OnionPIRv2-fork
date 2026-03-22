@@ -139,6 +139,51 @@ std::vector<uint8_t> server_answer_query(OnionPirServer &server,
   return stream_to_bytes(resp_stream);
 }
 
+// ======================== Shared key store ========================
+
+std::unique_ptr<SharedKeyStore> new_key_store(uint64_t num_entries) {
+  size_t n = num_entries == 0 ? DatabaseConstants::NumEntries : static_cast<size_t>(num_entries);
+  return std::make_unique<SharedKeyStore>(n);
+}
+
+void key_store_set_galois_key(SharedKeyStore &store,
+                               uint64_t client_id,
+                               const std::vector<uint8_t> &key_bytes) {
+  auto ss = bytes_to_stream(key_bytes);
+  store.set_galois_key(static_cast<size_t>(client_id), ss);
+}
+
+void key_store_set_gsw_key(SharedKeyStore &store,
+                            uint64_t client_id,
+                            const std::vector<uint8_t> &key_bytes) {
+  auto ss = bytes_to_stream(key_bytes);
+  store.set_gsw_key(static_cast<size_t>(client_id), ss);
+}
+
+std::vector<uint64_t> key_store_export_gsw(const SharedKeyStore &store,
+                                            uint64_t client_id) {
+  return store.export_expanded_gsw(static_cast<size_t>(client_id));
+}
+
+void key_store_import_gsw(SharedKeyStore &store,
+                           uint64_t client_id,
+                           const uint64_t *data,
+                           size_t num_values) {
+  store.import_expanded_gsw(static_cast<size_t>(client_id), data, num_values);
+}
+
+bool key_store_has_client(const SharedKeyStore &store, uint64_t client_id) {
+  return store.has_client(static_cast<size_t>(client_id));
+}
+
+void key_store_remove_client(SharedKeyStore &store, uint64_t client_id) {
+  store.remove(static_cast<size_t>(client_id));
+}
+
+void server_set_key_store(OnionPirServer &server, SharedKeyStore &store) {
+  server.inner.set_shared_key_store(&store);
+}
+
 // ======================== Async query queue ========================
 
 OnionPirQueryQueue::OnionPirQueryQueue(OnionPirServer &srv) : server(srv) {

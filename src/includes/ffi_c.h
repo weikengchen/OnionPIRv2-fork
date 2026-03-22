@@ -92,6 +92,42 @@ OnionBuf onion_server_answer_query(OnionPirServerHandle h,
                                    uint64_t client_id,
                                    const uint8_t *query, size_t query_len);
 
+// ======================== Shared key store ========================
+
+typedef void* OnionKeyStoreHandle;
+
+// Pass num_entries = 0 to use the compiled-in default.
+OnionKeyStoreHandle onion_key_store_new(uint64_t num_entries);
+void onion_key_store_free(OnionKeyStoreHandle h);
+
+// Key registration (deserialize once, share across all servers)
+void onion_key_store_set_galois_key(OnionKeyStoreHandle h,
+                                     uint64_t client_id,
+                                     const uint8_t *key, size_t key_len);
+void onion_key_store_set_gsw_key(OnionKeyStoreHandle h,
+                                  uint64_t client_id,
+                                  const uint8_t *key, size_t key_len);
+
+// Export expanded GSW key as flat uint64 array for caching.
+// Returned buffer contains uint64_t values (cast to uint8_t*); len is in bytes.
+// Caller must free with onion_free_buf().
+OnionBuf onion_key_store_export_gsw(OnionKeyStoreHandle h, uint64_t client_id);
+
+// Import pre-expanded GSW key (skip deserialization + NTT).
+// data points to num_values uint64_t values.
+void onion_key_store_import_gsw(OnionKeyStoreHandle h,
+                                 uint64_t client_id,
+                                 const uint64_t *data, size_t num_values);
+
+// Returns 1 if both key types are loaded for the client, 0 otherwise.
+int onion_key_store_has_client(OnionKeyStoreHandle h, uint64_t client_id);
+
+void onion_key_store_remove_client(OnionKeyStoreHandle h, uint64_t client_id);
+
+// Attach a shared key store to a server.
+// The store must outlive the server. Non-owning pointer.
+void onion_server_set_key_store(OnionPirServerHandle server, OnionKeyStoreHandle store);
+
 // ======================== Query queue ========================
 
 // Status codes matching QueryStatus enum

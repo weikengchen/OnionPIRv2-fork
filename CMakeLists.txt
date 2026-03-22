@@ -116,6 +116,7 @@ file(GLOB LIB_SRC_FILES
     src/matrix.cpp
     src/utils.cpp
     src/logging.cpp
+    src/shared_key_store.cpp
     src/ffi.cpp
     src/ffi_c.cpp
 )

@@ -65,6 +65,7 @@ struct CPirParamsInfo {
 type ServerHandle = *mut std::ffi::c_void;
 type ClientHandle = *mut std::ffi::c_void;
 type QueueHandle = *mut std::ffi::c_void;
+type KeyStoreHandle = *mut std::ffi::c_void;
 
 extern "C" {
     fn onion_free_buf(buf: COnionBuf);
@@ -99,6 +100,32 @@ extern "C" {
         query: *const u8,
         query_len: usize,
     ) -> COnionBuf;
+
+    // Shared key store
+    fn onion_key_store_new(num_entries: u64) -> KeyStoreHandle;
+    fn onion_key_store_free(h: KeyStoreHandle);
+    fn onion_key_store_set_galois_key(
+        h: KeyStoreHandle,
+        client_id: u64,
+        key: *const u8,
+        key_len: usize,
+    );
+    fn onion_key_store_set_gsw_key(
+        h: KeyStoreHandle,
+        client_id: u64,
+        key: *const u8,
+        key_len: usize,
+    );
+    fn onion_key_store_export_gsw(h: KeyStoreHandle, client_id: u64) -> COnionBuf;
+    fn onion_key_store_import_gsw(
+        h: KeyStoreHandle,
+        client_id: u64,
+        data: *const u64,
+        num_values: usize,
+    );
+    fn onion_key_store_has_client(h: KeyStoreHandle, client_id: u64) -> i32;
+    fn onion_key_store_remove_client(h: KeyStoreHandle, client_id: u64);
+    fn onion_server_set_key_store(server: ServerHandle, store: KeyStoreHandle);
 
     // Queue
     fn onion_queue_new(server: ServerHandle) -> QueueHandle;
@@ -339,6 +366,15 @@ impl Server {
         buf_to_vec(buf)
     }
 
+    /// Attach a shared key store. When set, key lookups during query processing
+    /// use the shared store instead of per-server maps.
+    ///
+    /// # Safety
+    /// The key store must outlive this server.
+    pub unsafe fn set_key_store(&mut self, store: &KeyStore) {
+        onion_server_set_key_store(self.handle, store.handle);
+    }
+
     /// Create an async query queue backed by a worker thread.
     ///
     /// The queue serializes queries so only one runs at a time (saturating all cores).
@@ -408,6 +444,88 @@ impl<'a> Drop for QueryQueue<'a> {
             onion_queue_stop(self.handle);
             onion_queue_free(self.handle);
         }
+    }
+}
+
+// ======================== Shared key store ========================
+
+/// Centralized key store shared across all [`Server`] instances.
+///
+/// Deserializes client keys once and makes them available to every attached
+/// server. This eliminates the N× deserialization overhead when N servers
+/// share the same SEAL parameters.
+///
+/// The store also supports exporting/importing expanded GSW keys as flat
+/// `u64` arrays, allowing Rust to cache processed keys across client sessions.
+pub struct KeyStore {
+    handle: KeyStoreHandle,
+}
+
+impl KeyStore {
+    /// Create a new shared key store. Pass `num_entries = 0` for the compiled-in default.
+    pub fn new(num_entries: u64) -> Self {
+        let handle = unsafe { onion_key_store_new(num_entries) };
+        assert!(!handle.is_null(), "failed to create SharedKeyStore");
+        Self { handle }
+    }
+
+    /// Deserialize and store a client's Galois key (one-time ~15ms cost).
+    pub fn set_galois_key(&mut self, client_id: u64, key: &[u8]) {
+        unsafe {
+            onion_key_store_set_galois_key(self.handle, client_id, key.as_ptr(), key.len());
+        }
+    }
+
+    /// Deserialize, convert, and NTT-transform a client's GSW key (one-time cost).
+    pub fn set_gsw_key(&mut self, client_id: u64, key: &[u8]) {
+        unsafe {
+            onion_key_store_set_gsw_key(self.handle, client_id, key.as_ptr(), key.len());
+        }
+    }
+
+    /// Export the expanded (NTT-transformed) GSW key as a flat `u64` array.
+    ///
+    /// Use this to cache the processed key on the Rust side. When the client
+    /// reconnects, pass the cached data to [`import_expanded_gsw`] to skip
+    /// the expensive deserialization + NTT transform.
+    ///
+    /// Returns an empty vector if the client has no GSW key loaded.
+    pub fn export_expanded_gsw(&self, client_id: u64) -> Vec<u64> {
+        let buf = unsafe { onion_key_store_export_gsw(self.handle, client_id) };
+        if buf.data.is_null() || buf.len == 0 {
+            unsafe { onion_free_buf(buf) };
+            return Vec::new();
+        }
+        // buf.len is in bytes; convert to u64 slice
+        let num_u64 = buf.len / std::mem::size_of::<u64>();
+        let v = unsafe { std::slice::from_raw_parts(buf.data as *const u64, num_u64) }.to_vec();
+        unsafe { onion_free_buf(buf) };
+        v
+    }
+
+    /// Import a previously exported expanded GSW key (skip deserialization + NTT).
+    ///
+    /// The `data` slice must have been produced by [`export_expanded_gsw`].
+    pub fn import_expanded_gsw(&mut self, client_id: u64, data: &[u64]) {
+        unsafe {
+            onion_key_store_import_gsw(self.handle, client_id, data.as_ptr(), data.len());
+        }
+    }
+
+    /// Check if both Galois and GSW keys are loaded for a client.
+    pub fn has_client(&self, client_id: u64) -> bool {
+        unsafe { onion_key_store_has_client(self.handle, client_id) != 0 }
+    }
+
+    /// Remove a client's keys from the store.
+    pub fn remove_client(&mut self, client_id: u64) {
+        unsafe { onion_key_store_remove_client(self.handle, client_id) }
+    }
+}
+
+impl Drop for KeyStore {
+    fn drop(&mut self) {
+        unsafe { onion_key_store_free(self.handle) }
     }
 }
 

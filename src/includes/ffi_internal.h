@@ -5,6 +5,7 @@
 #include "server.h"
 #include "client.h"
 #include "pir.h"
+#include "shared_key_store.h"
 
 #include <sstream>
 #include <cstring>
