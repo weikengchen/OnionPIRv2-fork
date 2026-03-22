@@ -500,6 +500,18 @@ PirServer::fast_expand_qry(std::size_t client_id,seal::Ciphertext &ciphertext) c
   const auto &galois_key = shared_key_store_
       ? shared_key_store_->get_galois_key(client_id)
       : client_galois_keys_.at(client_id);
+  // Diagnostic: verify galois key parms_id matches server context
+  if (shared_key_store_) {
+    auto server_parms = context_.key_parms_id();
+    auto key_parms = galois_key.parms_id();
+    if (server_parms != key_parms) {
+      fprintf(stderr, "[SharedKeyStore] PARMS_ID MISMATCH in fast_expand_qry! "
+              "Server parms_id[0]=%llu, key parms_id[0]=%llu\n",
+              (unsigned long long)server_parms[0], (unsigned long long)key_parms[0]);
+    } else {
+      fprintf(stderr, "[SharedKeyStore] fast_expand_qry: using shared galois key for client %zu (parms_id OK)\n", client_id);
+    }
+  }
   seal::EncryptionParameters params = pir_params_.get_seal_params();
   
   // ============== storage   – index 0 is *unused*, root is slot 1
@@ -630,6 +642,8 @@ void PirServer::remove_client_keys(const size_t client_id) {
 
 void PirServer::set_shared_key_store(SharedKeyStore *store) {
   shared_key_store_ = store;
+  fprintf(stderr, "[SharedKeyStore] server %p attached to key store %p\n",
+          (void*)this, (void*)store);
 }
 
 // ======================== Client key registration ========================
@@ -718,6 +732,13 @@ seal::Ciphertext PirServer::make_query(const size_t client_id, std::stringstream
       const auto &gsw_key = shared_key_store_
           ? shared_key_store_->get_gsw_key(client_id)
           : client_gsw_keys_[client_id];
+      // Diagnostic: verify GSW key is non-empty (only log from thread 0)
+      if (shared_key_store_ && i == 0) {
+        fprintf(stderr, "[SharedKeyStore] make_query: using shared GSW key for client %zu, "
+                "gsw_key rows=%zu, row_size=%zu\n",
+                client_id, gsw_key.size(),
+                gsw_key.empty() ? 0 : gsw_key[0].size());
+      }
       key_gsw_.query_to_gsw(lwe_vectors[i], gsw_key, gsw_vec[i]);
     }
   }

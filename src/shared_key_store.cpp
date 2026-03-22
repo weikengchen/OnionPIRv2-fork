@@ -17,6 +17,12 @@ SharedKeyStore::SharedKeyStore(size_t num_entries)
 void SharedKeyStore::set_galois_key(size_t client_id, std::stringstream &stream) {
   seal::GaloisKeys key;
   key.load(context_, stream);
+  auto pid = key.parms_id();
+  fprintf(stderr, "[SharedKeyStore %p] set_galois_key: client=%zu, parms_id[0]=%llu, "
+          "store context parms_id[0]=%llu\n",
+          (void*)this, client_id,
+          (unsigned long long)pid[0],
+          (unsigned long long)context_.key_parms_id()[0]);
   galois_keys_[client_id] = std::move(key);
   touch(client_id);
   evict_if_full();
@@ -40,6 +46,9 @@ void SharedKeyStore::set_gsw_key(size_t client_id, std::stringstream &stream) {
   // Step 3: NTT transform
   key_gsw_.gsw_ntt_negacyclic_harvey(gsw_key);
 
+  fprintf(stderr, "[SharedKeyStore %p] set_gsw_key: client=%zu, rows=%zu, row_size=%zu\n",
+          (void*)this, client_id, gsw_key.size(),
+          gsw_key.empty() ? 0 : gsw_key[0].size());
   gsw_keys_[client_id] = std::move(gsw_key);
   touch(client_id);
   evict_if_full();
