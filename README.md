@@ -8,11 +8,11 @@ We use c++20 and `GCC 11.4.0` for compilation.
 
 ### Installation
 
-1. OnionPIR v2 is using Microsoft SEAL library with some modification of their implementations. Hence, we forked their repository and applied changes. To run OnionPIRv2, you need to install  **[SEAL-For-OnionPIR](https://github.com/helloboyxxx/SEAL-For-OnionPIR)** first. Installation should be easy. You can run the following commands to build and install SEAL globally on your machine.
+1. OnionPIR v2 is using Microsoft SEAL library with some modification of their implementations. Hence, we forked their repository and applied changes. To run OnionPIRv2, you need to install  **[SEAL-For-OnionPIR-fork](https://github.com/Bitcoin-PIR/SEAL-For-OnionPIR-fork)** first. Installation should be easy. You can run the following commands to build and install SEAL globally on your machine.
 
 ```
-git clone https://github.com/helloboyxxx/SEAL-For-OnionPIR.git
-cd SEAL-For-OnionPIR/
+git clone https://github.com/Bitcoin-PIR/SEAL-For-OnionPIR-fork.git
+cd SEAL-For-OnionPIR-fork/
 mkdir build && cmake ..
 sudo make install
 ```
