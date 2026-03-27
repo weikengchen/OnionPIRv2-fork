@@ -120,7 +120,7 @@ file(GLOB LIB_SRC_FILES
     src/ffi.cpp
     src/ffi_c.cpp
 )
-add_library(onionpir STATIC ${LIB_SRC_FILES})
+add_library(onionpir ${LIB_SRC_FILES})
 target_include_directories(onionpir PUBLIC src/includes)
 target_link_libraries(onionpir PUBLIC SEAL::seal OpenMP::OpenMP_CXX)
 if (USE_HEXL AND HEXL_FOUND)
@@ -128,7 +128,9 @@ if (USE_HEXL AND HEXL_FOUND)
 endif()
 
 # Install the library and FFI headers for external consumers (e.g. Rust -sys crate)
-install(TARGETS onionpir seal ARCHIVE DESTINATION lib)
+install(TARGETS onionpir seal
+    ARCHIVE DESTINATION lib
+    LIBRARY DESTINATION lib)
 install(FILES src/includes/ffi.h src/includes/ffi_c.h DESTINATION include/onionpir)
 
 # ==================== Test executable ====================
