@@ -49,6 +49,14 @@ std::unique_ptr<OnionPirServer> new_server(uint64_t num_entries = 0);
 /// Returns true on success. On false, caller should populate + preprocess.
 bool server_load_db(OnionPirServer &server, const std::string &path);
 
+/// Try to load a preprocessed database from a caller-owned byte buffer.
+/// The buffer must start with the standard preprocessed header and remain
+/// valid for the lifetime of the server. Zero-copy: the server aliases the
+/// buffer and will NOT unmap or free it on destruction. Useful for loading
+/// multiple groups from slices of one mmap'd file.
+bool server_load_db_from_borrowed(OnionPirServer &server,
+                                  const uint8_t *data, size_t len);
+
 /// Save the current preprocessed database to disk.
 void server_save_db(const OnionPirServer &server, const std::string &path);
 

@@ -53,6 +53,14 @@ void onion_server_free(OnionPirServerHandle h);
 
 // Returns 1 on success, 0 on failure.
 int onion_server_load_db(OnionPirServerHandle h, const char *path);
+
+// Zero-copy load of a preprocessed DB from a caller-owned byte buffer. The
+// buffer must start with the standard preprocessed header and remain valid
+// for the lifetime of the server. The server aliases the buffer and will NOT
+// unmap or free it on destruction. Returns 1 on success, 0 on failure.
+int onion_server_load_db_from_borrowed(OnionPirServerHandle h,
+                                       const uint8_t *data, size_t len);
+
 void onion_server_save_db(OnionPirServerHandle h, const char *path);
 
 void onion_server_push_chunk(OnionPirServerHandle h,

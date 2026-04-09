@@ -44,13 +44,16 @@ PirServer::~PirServer() {
 #ifdef _DEBUG
   std::remove(RAW_DB_FILE);
 #endif
-  // clean up mmap if active
-  if (db_aligned_mmap_) {
+  // Clean up mmap if we own it. We own it iff db_aligned_mmap_fd_ >= 0 —
+  // that's only set by load_db_from_file, which always mmap+open together.
+  // load_db_from_borrowed leaves fd_ at -1 and hands us a non-owning view;
+  // in that case the caller is responsible for the underlying mapping.
+  if (db_aligned_mmap_ && db_aligned_mmap_fd_ >= 0) {
     // The mmap region starts at (db_aligned_mmap_ - header), but we stored the full length
     void *base = reinterpret_cast<char *>(db_aligned_mmap_) - sizeof(uint64_t) * 4;
     munmap(base, db_aligned_mmap_len_);
-    db_aligned_mmap_ = nullptr;
   }
+  db_aligned_mmap_ = nullptr;
   if (db_aligned_mmap_fd_ >= 0) {
     close(db_aligned_mmap_fd_);
     db_aligned_mmap_fd_ = -1;
@@ -122,13 +125,13 @@ void PirServer::set_shared_database(
   db_.reset();
   db_aligned_.reset();
 
-  // Release mmap if active
-  if (db_aligned_mmap_) {
+  // Release mmap if we own it (see destructor: fd_ >= 0 means owned).
+  if (db_aligned_mmap_ && db_aligned_mmap_fd_ >= 0) {
     void *base = reinterpret_cast<char *>(db_aligned_mmap_) - sizeof(uint64_t) * 4;
     munmap(base, db_aligned_mmap_len_);
-    db_aligned_mmap_ = nullptr;
-    db_aligned_mmap_len_ = 0;
   }
+  db_aligned_mmap_ = nullptr;
+  db_aligned_mmap_len_ = 0;
   if (db_aligned_mmap_fd_ >= 0) {
     close(db_aligned_mmap_fd_);
     db_aligned_mmap_fd_ = -1;
@@ -1115,6 +1118,69 @@ bool PirServer::load_db_from_file(const std::string &path) {
 
   double mb = static_cast<double>(file_size) / (1024.0 * 1024.0);
   BENCH_PRINT("Loaded preprocessed DB via mmap from " << path << " (" << mb << " MB)");
+  return true;
+}
+
+bool PirServer::load_db_from_borrowed(const uint8_t *data, size_t len) {
+  if (data == nullptr) {
+    return false;
+  }
+
+  // must be at least header-sized
+  if (len < HEADER_BYTES) {
+    BENCH_PRINT("load_db_from_borrowed: buffer too small for header");
+    return false;
+  }
+
+  // validate header (same shape as load_db_from_file)
+  const uint64_t *header = reinterpret_cast<const uint64_t *>(data);
+  const uint64_t magic = header[0];
+  const uint64_t file_num_pt = header[1];
+  const uint64_t file_coeff_val_cnt = header[2];
+  const uint64_t file_data_bytes = header[3];
+
+  const size_t expected_num_pt = pir_params_.get_num_pt();
+  const size_t expected_coeff_val_cnt = pir_params_.get_coeff_val_cnt();
+  const size_t expected_data_bytes = expected_num_pt * expected_coeff_val_cnt * sizeof(uint64_t);
+
+  if (magic != PREPROC_MAGIC ||
+      file_num_pt != expected_num_pt ||
+      file_coeff_val_cnt != expected_coeff_val_cnt ||
+      file_data_bytes != expected_data_bytes ||
+      len < HEADER_BYTES + expected_data_bytes) {
+    BENCH_PRINT("load_db_from_borrowed: config mismatch");
+    return false;
+  }
+
+  // Release any previously-owned mmap before replacing it. If the previous
+  // mapping was also borrowed (fd_ == -1), the destructor-style gate leaves
+  // it alone — the previous caller's buffer is their responsibility.
+  if (db_aligned_mmap_ && db_aligned_mmap_fd_ >= 0) {
+    void *prev_base = reinterpret_cast<char *>(db_aligned_mmap_) - sizeof(uint64_t) * 4;
+    munmap(prev_base, db_aligned_mmap_len_);
+  }
+  if (db_aligned_mmap_fd_ >= 0) {
+    close(db_aligned_mmap_fd_);
+    db_aligned_mmap_fd_ = -1;
+  }
+
+  // Point db_aligned_mmap_ at the borrowed data portion (after header).
+  // Cast away const: PirServer treats db_aligned_mmap_ as read-only during
+  // query answering, matching MAP_PRIVATE/PROT_READ semantics in
+  // load_db_from_file. The caller is responsible for ensuring the buffer
+  // outlives this PirServer.
+  db_aligned_mmap_ = reinterpret_cast<uint64_t *>(
+      const_cast<uint8_t *>(data + HEADER_BYTES));
+  db_aligned_mmap_len_ = len;
+  db_aligned_mmap_fd_ = -1; // borrowed — do NOT munmap in destructor
+
+  // Release the heap-allocated db_aligned_ since we won't need it.
+  db_aligned_.reset();
+  // Also don't need the plaintext database.
+  db_.reset();
+
+  double mb = static_cast<double>(len) / (1024.0 * 1024.0);
+  BENCH_PRINT("Loaded preprocessed DB from borrowed buffer (" << mb << " MB)");
   return true;
 }
 
