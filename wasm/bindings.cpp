@@ -41,11 +41,21 @@ public:
     OnionPirWasmClient(uint32_t num_entries)
         : params_(static_cast<size_t>(num_entries)), client_(params_) {}
 
+    OnionPirWasmClient(uint32_t num_entries, size_t client_id, const seal::SecretKey &sk)
+        : params_(static_cast<size_t>(num_entries)), client_(params_, client_id, sk) {}
+
     // Get the unique client ID (used for server key registration)
     double id() const {
         // Return as double since JS numbers can represent up to 2^53 safely,
         // and client IDs are small.
         return static_cast<double>(client_.get_client_id());
+    }
+
+    // Export the client's secret key (for creating per-database clients)
+    val exportSecretKey() {
+        std::stringstream ss;
+        client_.get_secret_key().save(ss);
+        return stream_to_uint8array(ss);
     }
 
     // Generate Galois keys (serialized bytes for the server)
@@ -86,6 +96,16 @@ private:
     PirClient client_;
 };
 
+// ======================== Factory: client from secret key ========================
+
+OnionPirWasmClient *createClientFromSecretKey(uint32_t num_entries, double client_id, val secret_key_arr) {
+    auto sk_stream = uint8array_to_stream(secret_key_arr);
+    seal::SEALContext context(PirParams::init_seal_params());
+    seal::SecretKey sk;
+    sk.load(context, sk_stream);
+    return new OnionPirWasmClient(num_entries, static_cast<size_t>(client_id), sk);
+}
+
 // ======================== Params info ========================
 
 val paramsInfo(uint32_t num_entries) {
@@ -122,11 +142,13 @@ EMSCRIPTEN_BINDINGS(onionpir_client) {
     class_<OnionPirWasmClient>("OnionPirClient")
         .constructor<uint32_t>()
         .function("id", &OnionPirWasmClient::id)
+        .function("exportSecretKey", &OnionPirWasmClient::exportSecretKey)
         .function("generateGaloisKeys", &OnionPirWasmClient::generateGaloisKeys)
         .function("generateGswKeys", &OnionPirWasmClient::generateGswKeys)
         .function("generateQuery", &OnionPirWasmClient::generateQuery)
         .function("decryptResponse", &OnionPirWasmClient::decryptResponse);
 
+    function("createClientFromSecretKey", &createClientFromSecretKey, allow_raw_pointers());
     function("paramsInfo", &paramsInfo);
     function("splitmix64", &splitmix64_wrapper);
     function("cuckooHashInt", &cuckoo_hash_int_wrapper);
