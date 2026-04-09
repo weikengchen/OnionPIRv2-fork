@@ -59,6 +59,11 @@ bool server_load_db(OnionPirServer &server, const std::string &path) {
   return server.inner.load_db_from_file(path);
 }
 
+bool server_load_db_from_borrowed(OnionPirServer &server,
+                                  const uint8_t *data, size_t len) {
+  return server.inner.load_db_from_borrowed(data, len);
+}
+
 void server_save_db(const OnionPirServer &server, const std::string &path) {
   server.inner.save_db_to_file(path);
 }

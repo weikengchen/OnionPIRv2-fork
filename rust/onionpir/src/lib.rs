@@ -75,6 +75,11 @@ extern "C" {
     fn onion_server_new(num_entries: u64) -> ServerHandle;
     fn onion_server_free(h: ServerHandle);
     fn onion_server_load_db(h: ServerHandle, path: *const i8) -> i32;
+    fn onion_server_load_db_from_borrowed(
+        h: ServerHandle,
+        data: *const u8,
+        len: usize,
+    ) -> i32;
     fn onion_server_save_db(h: ServerHandle, path: *const i8);
     fn onion_server_push_chunk(h: ServerHandle, data: *const u8, data_len: usize, chunk_idx: usize);
     fn onion_server_preprocess(h: ServerHandle);
@@ -270,6 +275,28 @@ impl Server {
     pub fn load_db(&mut self, path: &str) -> bool {
         let cpath = CString::new(path).expect("path contains null byte");
         unsafe { onion_server_load_db(self.handle, cpath.as_ptr()) != 0 }
+    }
+
+    /// Load a preprocessed database from a caller-owned byte buffer
+    /// (zero-copy). The server aliases the buffer and will NOT free or
+    /// unmap it on drop; the caller must keep `bytes` valid for the
+    /// lifetime of this `Server`.
+    ///
+    /// The buffer must start with the standard preprocessed header and
+    /// match the server's configured `PirParams`. Returns `true` on
+    /// success, `false` on size/header mismatch.
+    ///
+    /// Typical use: `mmap` a consolidated file containing several
+    /// per-group preprocessed databases back-to-back, then hand each
+    /// sub-slice to its own `Server` instance.
+    ///
+    /// # Safety
+    /// The caller must ensure `bytes` outlives this `Server` instance.
+    /// If the underlying buffer (e.g. an mmap region) is dropped or
+    /// unmapped while the server is still alive, answering queries is
+    /// undefined behavior.
+    pub unsafe fn load_db_from_bytes(&mut self, bytes: &[u8]) -> bool {
+        onion_server_load_db_from_borrowed(self.handle, bytes.as_ptr(), bytes.len()) != 0
     }
 
     /// Save the preprocessed database to disk for future fast loading.

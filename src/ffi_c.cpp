@@ -62,6 +62,13 @@ extern "C" int onion_server_load_db(OnionPirServerHandle h, const char *path) {
   return server_load_db(srv, std::string(path)) ? 1 : 0;
 }
 
+extern "C" int onion_server_load_db_from_borrowed(OnionPirServerHandle h,
+                                                  const uint8_t *data,
+                                                  size_t len) {
+  auto &srv = *static_cast<OnionPirServer *>(h);
+  return server_load_db_from_borrowed(srv, data, len) ? 1 : 0;
+}
+
 extern "C" void onion_server_save_db(OnionPirServerHandle h, const char *path) {
   auto &srv = *static_cast<OnionPirServer *>(h);
   server_save_db(srv, std::string(path));

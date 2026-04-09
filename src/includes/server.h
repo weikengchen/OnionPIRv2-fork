@@ -73,6 +73,25 @@ public:
    */
   bool load_db_from_file(const std::string &path);
 
+  /**
+   * Load a preprocessed database from a caller-owned byte buffer (zero-copy).
+   *
+   * The buffer must start with the same header format produced by
+   * save_db_to_file (4 x uint64_t: PREPROC_MAGIC, num_pt, coeff_val_cnt,
+   * data_bytes) followed by data_bytes of NTT-form data. The caller retains
+   * ownership of the buffer and MUST keep it valid for the lifetime of this
+   * PirServer instance (typically by backing it with an mmap region owned by
+   * the caller). The destructor will NOT unmap or free the buffer.
+   *
+   * Intended use: consolidate multiple per-group preprocessed databases into
+   * one file, mmap it once in the caller, and hand a sub-slice to each
+   * PirServer. This is the borrowed analogue of load_db_from_file.
+   *
+   * Returns true on success. Returns false if the buffer is too small or the
+   * header fails validation against the current PirParams.
+   */
+  bool load_db_from_borrowed(const uint8_t *data, size_t len);
+
   // push one chunk of entry to the given database
   void push_database_chunk(std::vector<Entry> &chunk_entry, const size_t chunk_idx);
 
